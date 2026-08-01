@@ -10,7 +10,7 @@ import { GlassButton } from "./components/GlassButton";
 
 type Slot = "demo" | "reference";
 type View = "new" | "report";
-type ReportTab = "overview" | "stereo" | "eq" | "melody" | "arrangement" | "dynamics" | "priority" | "feedback";
+type ReportTab = "overview" | "stereo" | "eq" | "dynamics" | "priority" | "feedback";
 
 type SelectedAudio = {
   file: File;
@@ -174,10 +174,13 @@ function AppHeader({ view, hasReport, onNew, onReport }: { view: View; hasReport
   return (
     <header className="site-header">
       <div className="site-header-inner">
-        <GlassButton className="site-brand" contentClassName="site-brand-content" size="default" variant="neutral" type="button" onClick={onNew} aria-label="Open a new analysis">
-          <strong>ZIRECT</strong>
-          <span>AUDIO ANALYZER</span>
-        </GlassButton>
+        <button className="site-brand" type="button" onClick={onNew} aria-label="Open a new analysis">
+          <img className="site-brand-logo" src={`${import.meta.env.BASE_URL}zirect-logo-white.png`} alt="" aria-hidden="true" />
+          <span className="site-brand-copy">
+            <strong>ZIRECT</strong>
+            <span>AUDIO ANALYZER</span>
+          </span>
+        </button>
         <nav className="header-nav" aria-label="Primary navigation">
           <GlassButton className={`header-new-analysis ${view === "new" ? "active" : ""}`} size="default" variant="secondary" type="button" onClick={onNew} aria-current={view === "new" ? "page" : undefined}>New Analysis</GlassButton>
           <GlassButton className={`header-report-button ${view === "report" ? "active" : ""}`} size="default" variant="secondary" type="button" disabled={!hasReport} onClick={onReport} aria-current={view === "report" ? "page" : undefined}>Analysis Report</GlassButton>
@@ -250,16 +253,6 @@ function UploadWorkspace(props: UploadWorkspaceProps) {
         {props.analysisError ? <div className="analysis-error" role="alert"><b>Analysis could not be completed</b><span>{props.analysisError}</span></div> : null}
         {props.hasReport ? <GlassButton className="resume-report" contentClassName="resume-report-content" size="default" variant="primary" type="button" onClick={props.onOpenReport}>Open the latest analysis report <span>→</span></GlassButton> : null}
 
-        <section className="scope-panel">
-          <div className="scope-title">ANALYSIS SCOPE</div>
-          <div className="scope-grid">
-            <ScopeItem icon="lufs" label="LUFS" />
-            <ScopeItem icon="stereo" label="Stereo" />
-            <ScopeItem icon="phase" label="Phase" />
-            <ScopeItem icon="eq" label="EQ" />
-            <ScopeItem icon="dynamics" label="Dynamics" />
-          </div>
-        </section>
       </div>
     </>
   );
@@ -281,13 +274,10 @@ type UploadCardProps = {
 };
 
 function UploadCard({ slot, title, audio, error, active, previewing, inputRef, onInput, onDrop, onDrag, onPreview, onRemove }: UploadCardProps) {
-  const cardRef = useRef<HTMLElement>(null);
   const previewAudio = useRef<HTMLAudioElement>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewDuration, setPreviewDuration] = useState<number>();
   const [previewPosition, setPreviewPosition] = useState(0);
-  const [fullscreenSupported, setFullscreenSupported] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
 
   useEffect(() => {
     setPreviewDuration(undefined);
@@ -300,13 +290,6 @@ function UploadCard({ slot, title, audio, error, active, previewing, inputRef, o
     setPreviewUrl(objectUrl);
     return () => URL.revokeObjectURL(objectUrl);
   }, [audio?.file]);
-
-  useEffect(() => {
-    setFullscreenSupported(Boolean(document.fullscreenEnabled && cardRef.current?.requestFullscreen));
-    const syncFullscreen = () => setFullscreen(document.fullscreenElement === cardRef.current);
-    document.addEventListener("fullscreenchange", syncFullscreen);
-    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
-  }, []);
 
   useEffect(() => {
     if (previewing !== slot) previewAudio.current?.pause();
@@ -356,24 +339,12 @@ function UploadCard({ slot, title, audio, error, active, previewing, inputRef, o
     if (previewAudio.current) previewAudio.current.currentTime = nextPosition;
   };
 
-  const toggleFullscreen = async (event: React.MouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation();
-    if (!cardRef.current || !fullscreenSupported) return;
-    try {
-      if (document.fullscreenElement === cardRef.current) await document.exitFullscreen();
-      else await cardRef.current.requestFullscreen();
-    } catch {
-      setFullscreen(false);
-    }
-  };
-
   const extension = audio?.file.name.split(".").pop()?.toUpperCase() || "AUDIO";
   const duration = audio?.duration ?? previewDuration;
   const isPlaying = previewing === slot;
 
   return (
     <article
-      ref={cardRef}
       className={`upload-card ${slot} ${active ? "dragging" : ""} ${audio ? "selected" : "empty"}`}
       tabIndex={0}
       onClick={handleCardClick}
@@ -387,11 +358,6 @@ function UploadCard({ slot, title, audio, error, active, previewing, inputRef, o
       <input className="upload-input" ref={inputRef} type="file" accept="audio/*,.wav,.flac,.mp3,.m4a,.aac,.ogg,.opus" onChange={(event) => onInput(slot, event)} aria-label={`Choose a file for ${title}`} />
       <header className="upload-card-header">
         <div className="upload-card-heading"><span className="upload-status-dot" /><h2>{title}</h2></div>
-        {fullscreenSupported ? (
-          <GlassButton className={`expand-card glass-button-tone-${slot}`} size="icon" variant="neutral" type="button" onClick={toggleFullscreen} aria-label={fullscreen ? `Exit fullscreen for ${title}` : `Open ${title} in fullscreen`}>
-            <span className="expand-icon" aria-hidden="true"><i /><i /><i /><i /></span>
-          </GlassButton>
-        ) : null}
       </header>
 
       <div className="upload-card-body">
@@ -407,7 +373,11 @@ function UploadCard({ slot, title, audio, error, active, previewing, inputRef, o
           </div>
         ) : (
           <div className="upload-empty-copy">
-            <span className="upload-glyph" aria-hidden="true"><i /></span>
+            <span className="upload-glyph" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M5 20h14v-2H5zm0-10h4v6h6v-6h4l-7-7z" />
+              </svg>
+            </span>
             <h3>{slot === "demo" ? "Upload Demo Track" : "Upload Reference Track"}</h3>
             <p>Drop a WAV, MP3, or FLAC file here</p>
             <span className="upload-browse">or click to browse</span>
@@ -440,10 +410,6 @@ function UploadCard({ slot, title, audio, error, active, previewing, inputRef, o
       ) : null}
     </article>
   );
-}
-
-function ScopeItem({ icon, label }: { icon: string; label: string }) {
-  return <div className="scope-item"><span className={`scope-icon ${icon}`} aria-hidden="true"><i /><i /><i /><i /><i /></span><span>{label}</span></div>;
 }
 
 function AnalysisProgress({ progress, label }: { progress: number; label: string }) {
@@ -493,8 +459,6 @@ function ReportWorkspace({ analysis, demoFile, referenceFile, onNew }: { analysi
     { key: "overview", label: "Overview" },
     { key: "stereo", label: "Stereo & Spatial Image" },
     { key: "eq", label: "EQ & Tonal Balance" },
-    { key: "melody", label: "Melody & Motif" },
-    { key: "arrangement", label: "Arrangement & Reverb" },
     { key: "dynamics", label: "Loudness & Dynamics" },
     { key: "priority", label: "Priority Ranking" },
     { key: "feedback", label: "Producer Feedback" },
@@ -533,8 +497,6 @@ function ReportWorkspace({ analysis, demoFile, referenceFile, onNew }: { analysi
           {tab === "overview" ? <OverviewTab analysis={analysis} /> : null}
           {tab === "stereo" ? <StereoTab analysis={analysis} /> : null}
           {tab === "eq" ? <EqTab analysis={analysis} /> : null}
-          {tab === "melody" ? <MelodyTab analysis={analysis} /> : null}
-          {tab === "arrangement" ? <ArrangementTab analysis={analysis} /> : null}
           {tab === "dynamics" ? <DynamicsTab analysis={analysis} /> : null}
           {tab === "priority" ? <PriorityTab analysis={analysis} /> : null}
           {tab === "feedback" ? <FeedbackTab analysis={analysis} copied={copied} onCopy={copyFeedback} /> : null}
@@ -748,24 +710,6 @@ function EqTab({ analysis }: { analysis: PairAnalysis }) {
   );
 }
 
-function MelodyTab({ analysis }: { analysis: PairAnalysis }) {
-  return (
-    <div className="report-stack">
-      <section className="report-panel"><PanelHeading index="01" title="Melody & Motif" subtitle="Foreground movement, note density, and perceived prominence" /><RelevantFindings analysis={analysis} sections={["Melody & Motif"]} /></section>
-      <section className="report-panel context-panel"><PanelHeading index="NOTE" title="Interpretation Context" subtitle="Stereo mix measurements cannot identify individual instruments with certainty" /><p>Onset density and midrange prominence are measured directly. Instrument, motif, and performance references are labeled as inferences and should be confirmed by listening at the detected timestamps.</p></section>
-    </div>
-  );
-}
-
-function ArrangementTab({ analysis }: { analysis: PairAnalysis }) {
-  return (
-    <div className="report-stack">
-      <section className="report-panel"><PanelHeading index="01" title="Arrangement & Reverb" subtitle="Layer density, spectral buildup, and spatial tails" /><RelevantFindings analysis={analysis} sections={["Arrangement & Reverb"]} /></section>
-      <section className="report-panel context-panel"><PanelHeading index="NOTE" title="Mix Context" subtitle="Recommendations prioritize track or bus changes before master processing" /><p>Reverb and arrangement conclusions combine measured tonal, spatial, and motion evidence. Confirm the likely source in the session before applying an adjustment.</p></section>
-    </div>
-  );
-}
-
 function DynamicsTab({ analysis }: { analysis: PairAnalysis }) {
   const metrics = [
     ["Integrated loudness", `${analysis.demo.loudness.integratedLufs.toFixed(1)} LUFS`, `${analysis.reference.loudness.integratedLufs.toFixed(1)} LUFS`],
@@ -846,7 +790,7 @@ function SpectrumChart({ analysis }: { analysis: PairAnalysis }) {
     {
       key: "demo",
       label: "Demo",
-      color: "#40dece",
+      color: "#3b9eff",
       gradient: "spectrum-demo-fill",
       values: analysis.demo.spectral.curve.map((point) => ({
         frequency: point.frequency,
@@ -856,7 +800,7 @@ function SpectrumChart({ analysis }: { analysis: PairAnalysis }) {
     {
       key: "reference",
       label: "Reference",
-      color: "#a38dff",
+      color: "#d8dee3",
       gradient: "spectrum-reference-fill",
       values: analysis.reference.spectral.curve.map((point) => ({
         frequency: point.frequency,
@@ -889,10 +833,10 @@ function SpectrumChart({ analysis }: { analysis: PairAnalysis }) {
       <div className="spectrum-frame">
       <svg className="spectrum-chart" viewBox="0 0 920 340" role="img" aria-label="Demo and Reference left/right spectrum comparison">
         <title>Average spectrum after loudness matching</title>
-        <desc>The Demo average spectrum is shown in cyan and the Reference average spectrum is shown in violet.</desc>
+        <desc>The Demo average spectrum is shown in blue and the Reference average spectrum is shown in light gray.</desc>
         <defs>
-          <linearGradient id="spectrum-demo-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#43e2d1" stopOpacity=".58" /><stop offset="1" stopColor="#1f8f89" stopOpacity=".16" /></linearGradient>
-          <linearGradient id="spectrum-reference-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#aa94ff" stopOpacity=".52" /><stop offset="1" stopColor="#6150a8" stopOpacity=".13" /></linearGradient>
+          <linearGradient id="spectrum-demo-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#4aa8ff" stopOpacity=".58" /><stop offset="1" stopColor="#1e5f9b" stopOpacity=".16" /></linearGradient>
+          <linearGradient id="spectrum-reference-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#e1e5e8" stopOpacity=".52" /><stop offset="1" stopColor="#858e95" stopOpacity=".13" /></linearGradient>
           <clipPath id="spectrum-plot-clip"><rect x={plot.left} y={plot.top} width={plot.right - plot.left} height={plot.bottom - plot.top} rx="4" /></clipPath>
         </defs>
         <rect className="spectrum-background" x={plot.left} y={plot.top} width={plot.right - plot.left} height={plot.bottom - plot.top} rx="5" />
