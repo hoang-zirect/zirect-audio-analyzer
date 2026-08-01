@@ -6,6 +6,7 @@ import {
   formatTimestamp,
   PairAnalysis,
 } from "./audio-analysis";
+import { GlassButton } from "./components/GlassButton";
 
 type Slot = "demo" | "reference";
 type View = "new" | "report";
@@ -173,13 +174,13 @@ function AppHeader({ view, hasReport, onNew, onReport }: { view: View; hasReport
   return (
     <header className="site-header">
       <div className="site-header-inner">
-        <button className="site-brand" type="button" onClick={onNew} aria-label="Open a new analysis">
+        <GlassButton className="site-brand" contentClassName="site-brand-content" size="default" variant="neutral" type="button" onClick={onNew} aria-label="Open a new analysis">
           <strong>ZIRECT</strong>
           <span>AUDIO ANALYZER</span>
-        </button>
+        </GlassButton>
         <nav className="header-nav" aria-label="Primary navigation">
-          <button className={view === "new" ? "active" : ""} type="button" onClick={onNew} aria-current={view === "new" ? "page" : undefined}>New Analysis</button>
-          <button className={view === "report" ? "active" : ""} type="button" disabled={!hasReport} onClick={onReport} aria-current={view === "report" ? "page" : undefined}>Analysis Report</button>
+          <GlassButton className={`header-new-analysis ${view === "new" ? "active" : ""}`} size="default" variant="secondary" type="button" onClick={onNew} aria-current={view === "new" ? "page" : undefined}>New Analysis</GlassButton>
+          <GlassButton className={`header-report-button ${view === "report" ? "active" : ""}`} size="default" variant="secondary" type="button" disabled={!hasReport} onClick={onReport} aria-current={view === "report" ? "page" : undefined}>Analysis Report</GlassButton>
         </nav>
       </div>
     </header>
@@ -231,14 +232,23 @@ function UploadWorkspace(props: UploadWorkspaceProps) {
 
         <section className={`analysis-cta ${props.fileReady ? "ready" : ""}`} aria-label="Start audio analysis">
           <div className="analysis-readiness"><span /><b>{props.fileReady ? "Both tracks are ready" : "Both tracks are required before analysis can begin."}</b></div>
-          <button className="start-analysis-button" type="button" onClick={props.onAnalyze} disabled={!props.fileReady || props.analyzing}>
-            <span>{props.analyzing ? "Analyzing" : "Start Analysis"}</span><i aria-hidden="true">→</i>
-          </button>
+          <GlassButton
+            className="start-analysis-button"
+            contentClassName="start-analysis-content"
+            size="lg"
+            variant="primary"
+            type="button"
+            onClick={props.onAnalyze}
+            disabled={!props.fileReady || props.analyzing}
+            loading={props.analyzing}
+          >
+            <span>{props.analyzing ? "Analyzing" : "Start Analysis"}</span><i className="start-analysis-arrow" aria-hidden="true">→</i>
+          </GlassButton>
           <p><span>i</span>Hz and dB values are starting points for critical listening.</p>
         </section>
 
         {props.analysisError ? <div className="analysis-error" role="alert"><b>Analysis could not be completed</b><span>{props.analysisError}</span></div> : null}
-        {props.hasReport ? <button className="resume-report" type="button" onClick={props.onOpenReport}>Open the latest analysis report <span>→</span></button> : null}
+        {props.hasReport ? <GlassButton className="resume-report" contentClassName="resume-report-content" size="default" variant="primary" type="button" onClick={props.onOpenReport}>Open the latest analysis report <span>→</span></GlassButton> : null}
 
         <section className="scope-panel">
           <div className="scope-title">ANALYSIS SCOPE</div>
@@ -378,9 +388,9 @@ function UploadCard({ slot, title, audio, error, active, previewing, inputRef, o
       <header className="upload-card-header">
         <div className="upload-card-heading"><span className="upload-status-dot" /><h2>{title}</h2></div>
         {fullscreenSupported ? (
-          <button className="expand-card" type="button" onClick={toggleFullscreen} aria-label={fullscreen ? `Exit fullscreen for ${title}` : `Open ${title} in fullscreen`}>
+          <GlassButton className={`expand-card glass-button-tone-${slot}`} size="icon" variant="neutral" type="button" onClick={toggleFullscreen} aria-label={fullscreen ? `Exit fullscreen for ${title}` : `Open ${title} in fullscreen`}>
             <span className="expand-icon" aria-hidden="true"><i /><i /><i /><i /></span>
-          </button>
+          </GlassButton>
         ) : null}
       </header>
 
@@ -393,7 +403,7 @@ function UploadCard({ slot, title, audio, error, active, previewing, inputRef, o
               <span>{extension}</span><i /><span>{formatBytes(audio.file.size)}</span><i /><span>{duration ? formatDuration(duration) : "Reading duration"}</span>
               {audio.sampleRate ? <><i /><span>{audio.sampleRate / 1000} kHz · {audio.channels === 1 ? "Mono" : "Stereo"}</span></> : null}
             </div>
-            <button className="replace-file" type="button" onClick={replaceFile}>Replace File</button>
+            <GlassButton className={`replace-file glass-button-tone-${slot}`} size="sm" variant="neutral" type="button" onClick={replaceFile}>Replace File</GlassButton>
           </div>
         ) : (
           <div className="upload-empty-copy">
@@ -409,14 +419,14 @@ function UploadCard({ slot, title, audio, error, active, previewing, inputRef, o
 
       {audio ? (
         <footer className="upload-card-footer">
-          <button className={`upload-play ${isPlaying ? "playing" : ""}`} type="button" onClick={togglePreview} disabled={!previewUrl} aria-label={isPlaying ? `Pause ${audio.file.name}` : `Preview ${audio.file.name}`}>
-            <span aria-hidden="true">{isPlaying ? <><i /><i /></> : <b />}</span>
-          </button>
+          <GlassButton className={`upload-play glass-button-tone-${slot} ${isPlaying ? "playing" : ""}`} size="icon" variant="primary" type="button" onClick={togglePreview} disabled={!previewUrl} aria-label={isPlaying ? `Pause ${audio.file.name}` : `Preview ${audio.file.name}`}>
+            <span className="play-button-glyph" aria-hidden="true">{isPlaying ? <><i /><i /></> : <b />}</span>
+          </GlassButton>
           <div className="upload-preview-track">
             <div className="upload-file-state"><span className="upload-status-dot" /><b>{isPlaying ? "Previewing" : "Ready for analysis"}</b><em>{formatDuration(previewPosition)} / {duration ? formatDuration(duration) : "--:--"}</em></div>
             <input aria-label={`Preview position for ${audio.file.name}`} type="range" min="0" max={duration || 1} step="0.1" value={Math.min(previewPosition, duration || 1)} onChange={seekPreview} onClick={(event) => event.stopPropagation()} />
           </div>
-          <button className="remove-upload" type="button" onClick={(event) => { event.stopPropagation(); onRemove(slot); }} aria-label={`Remove ${audio.file.name}`}>Remove File</button>
+          <GlassButton className="remove-upload" size="sm" variant="danger" type="button" onClick={(event) => { event.stopPropagation(); onRemove(slot); }} aria-label={`Remove ${audio.file.name}`}>Remove File</GlassButton>
           <audio
             ref={previewAudio}
             src={previewUrl ?? undefined}
@@ -505,10 +515,10 @@ function ReportWorkspace({ analysis, demoFile, referenceFile, onNew }: { analysi
               <div><span>RELEASE ASSESSMENT</span><strong>{analysis.releaseVerdict}</strong></div>
             </div>
             <div className="report-hero-actions">
-              <button type="button" className="report-secondary-action" onClick={onNew}>Replace Files / New Analysis</button>
-              <button type="button" className="report-primary-action" onClick={tab === "feedback" ? copyFeedback : () => setTab("feedback")}>
+              <GlassButton type="button" className="report-secondary-action" size="default" variant="secondary" onClick={onNew}>Replace Files / New Analysis</GlassButton>
+              <GlassButton type="button" className="report-primary-action" size="default" variant="primary" onClick={tab === "feedback" ? copyFeedback : () => setTab("feedback")}>
                 {tab === "feedback" ? (copied ? "Copied" : "Copy Feedback") : "Open Producer Feedback"}
-              </button>
+              </GlassButton>
             </div>
           </div>
         </section>
@@ -516,7 +526,7 @@ function ReportWorkspace({ analysis, demoFile, referenceFile, onNew }: { analysi
         <LoudnessMatch analysis={analysis} />
 
         <nav className="report-tabs" aria-label="Analysis report sections">
-          {tabs.map((item) => <button key={item.key} type="button" className={tab === item.key ? "active" : ""} onClick={() => setTab(item.key)}>{item.label}</button>)}
+          {tabs.map((item) => <GlassButton key={item.key} type="button" size="default" variant="neutral" className={`report-tab-button ${tab === item.key ? "active" : ""}`} onClick={() => setTab(item.key)}>{item.label}</GlassButton>)}
         </nav>
 
         <div className="report-body">
@@ -639,12 +649,12 @@ function ABPlayer({ analysis, demoFile, referenceFile }: { analysis: PairAnalysi
     <section className="ab-player-dock" aria-label="Demo and Reference comparison player">
       <div className="ab-player-inner">
         <div className="ab-dock-label"><span>A/B</span><div><b>LOUDNESS-MATCHED</b><small>{analysis.loudnessMatch.targetLufs.toFixed(1)} LUFS-I · local playback</small></div></div>
-        <button className={`ab-master-play ${playing ? "playing" : ""}`} type="button" onClick={togglePlayback} aria-label={playing ? "Pause the A/B player" : "Play the A/B player"}>
-          <span aria-hidden="true">{playing ? <><i /><i /></> : <b />}</span>
-        </button>
+        <GlassButton className={`ab-master-play glass-button-tone-${selected} ${playing ? "playing" : ""}`} size="icon" variant="primary" type="button" onClick={togglePlayback} aria-label={playing ? "Pause the A/B player" : "Play the A/B player"}>
+          <span className="play-button-glyph" aria-hidden="true">{playing ? <><i /><i /></> : <b />}</span>
+        </GlassButton>
         <div className="ab-source-toggle" aria-label="Select the playback source">
-          <button type="button" className={`demo ${selected === "demo" ? "active" : ""}`} onClick={() => selectSource("demo")}><span>Demo</span><small>{signed(analysis.loudnessMatch.demoGainDb, " dB")}</small></button>
-          <button type="button" className={`reference ${selected === "reference" ? "active" : ""}`} onClick={() => selectSource("reference")}><span>Reference</span><small>{signed(analysis.loudnessMatch.referenceGainDb, " dB")}</small></button>
+          <GlassButton type="button" size="default" variant="neutral" className={`demo glass-button-tone-demo ${selected === "demo" ? "active" : ""}`} contentClassName="ab-source-content" onClick={() => selectSource("demo")}><span>Demo</span><small>{signed(analysis.loudnessMatch.demoGainDb, " dB")}</small></GlassButton>
+          <GlassButton type="button" size="default" variant="neutral" className={`reference glass-button-tone-reference ${selected === "reference" ? "active" : ""}`} contentClassName="ab-source-content" onClick={() => selectSource("reference")}><span>Reference</span><small>{signed(analysis.loudnessMatch.referenceGainDb, " dB")}</small></GlassButton>
         </div>
         <div className="ab-dock-timeline">
           <input aria-label="A/B playback position" type="range" min="0" max={duration || 1} step="0.1" value={Math.min(position, duration || 1)} onChange={(event) => seek(Number(event.target.value))} />
@@ -731,7 +741,7 @@ function StereoTab({ analysis }: { analysis: PairAnalysis }) {
 function EqTab({ analysis }: { analysis: PairAnalysis }) {
   return (
     <div className="report-stack">
-      <section className="report-panel spectrum-panel"><PanelHeading index="01" title="Average Per-Channel Spectrum" subtitle="Separate L/R curves after loudness matching" /><SpectrumChart analysis={analysis} /></section>
+      <section className="report-panel spectrum-panel"><PanelHeading index="01" title="Average Spectrum" subtitle="Demo and Reference average curves after loudness matching" /><SpectrumChart analysis={analysis} /></section>
       <section className="report-panel"><PanelHeading index="02" title="Frequency-Band Differences" subtitle="Positive values mean more energy in the Demo" /><BandDeltaChart analysis={analysis} /></section>
       <section className="report-panel"><PanelHeading index="03" title="EQ & Tonal Balance Findings" subtitle="Suggested source, bus, or master adjustments" /><RelevantFindings analysis={analysis} sections={["EQ & Tonal Balance", "File Quality"]} /></section>
     </div>
@@ -817,7 +827,7 @@ function FeedbackTab({ analysis, copied, onCopy }: { analysis: PairAnalysis; cop
   return (
     <div className="feedback-layout">
       <section className="report-panel feedback-document">
-        <div className="feedback-head"><PanelHeading index="VN" title="Producer Feedback" subtitle="Output language: Vietnamese · prioritized and timestamped" /><button type="button" onClick={onCopy}>{copied ? "Copied ✓" : "Copy Feedback"}</button></div>
+        <div className="feedback-head"><PanelHeading index="VN" title="Producer Feedback" subtitle="Output language: Vietnamese · prioritized and timestamped" /><GlassButton className="feedback-copy-button" size="default" variant="secondary" type="button" onClick={onCopy}>{copied ? "Copied ✓" : "Copy Feedback"}</GlassButton></div>
         <div className="feedback-section"><h3>Điểm đã làm tốt</h3>{analysis.feedback.good.map((item) => <p key={item}>{item}</p>)}</div>
         <div className="feedback-section"><h3>Các chỉnh sửa ưu tiên</h3>{analysis.feedback.priority.length ? analysis.feedback.priority.map((item) => <p key={item}>{item}</p>) : <p>Hiện chưa có lỗi kỹ thuật lớn; vui lòng kiểm tra lại bằng tai nghe trước khi master cuối.</p>}</div>
         <div className="feedback-section"><h3>Đề xuất bổ sung</h3>{analysis.feedback.supplemental.length ? analysis.feedback.supplemental.map((item) => <p key={item}>{item}</p>) : <p>Giữ nguyên các phần đang cân bằng và tránh xử lý toàn master nếu vấn đề chỉ nằm ở một layer.</p>}</div>
@@ -832,25 +842,71 @@ function FeedbackTab({ analysis, copied, onCopy }: { analysis: PairAnalysis; cop
 }
 
 function SpectrumChart({ analysis }: { analysis: PairAnalysis }) {
-  const curves = [
-    { key: "demoL", label: "Demo L", color: "#29d6c7", dash: "", values: analysis.demo.spectral.curve.map((point) => ({ frequency: point.frequency, db: point.leftDb + analysis.loudnessMatch.demoGainDb })) },
-    { key: "demoR", label: "Demo R", color: "#8cf3e9", dash: "4 5", values: analysis.demo.spectral.curve.map((point) => ({ frequency: point.frequency, db: point.rightDb + analysis.loudnessMatch.demoGainDb })) },
-    { key: "refL", label: "Ref L", color: "#9f8cff", dash: "", values: analysis.reference.spectral.curve.map((point) => ({ frequency: point.frequency, db: point.leftDb + analysis.loudnessMatch.referenceGainDb })) },
-    { key: "refR", label: "Ref R", color: "#c8beff", dash: "4 5", values: analysis.reference.spectral.curve.map((point) => ({ frequency: point.frequency, db: point.rightDb + analysis.loudnessMatch.referenceGainDb })) },
+  const tracks = [
+    {
+      key: "demo",
+      label: "Demo",
+      color: "#40dece",
+      gradient: "spectrum-demo-fill",
+      values: analysis.demo.spectral.curve.map((point) => ({
+        frequency: point.frequency,
+        db: (point.leftDb + point.rightDb) * 0.5 + analysis.loudnessMatch.demoGainDb,
+      })),
+    },
+    {
+      key: "reference",
+      label: "Reference",
+      color: "#a38dff",
+      gradient: "spectrum-reference-fill",
+      values: analysis.reference.spectral.curve.map((point) => ({
+        frequency: point.frequency,
+        db: (point.leftDb + point.rightDb) * 0.5 + analysis.loudnessMatch.referenceGainDb,
+      })),
+    },
   ];
-  const all = curves.flatMap((curve) => curve.values.map((point) => point.db));
+  const all = tracks.flatMap((track) => track.values.map((point) => point.db));
   const maxDb = Math.ceil(Math.max(...all) / 5) * 5 + 2;
   const minDb = maxDb - 62;
-  const x = (frequency: number) => 46 + Math.log10(frequency / 20) / Math.log10(20000 / 20) * 824;
-  const y = (db: number) => 18 + (maxDb - clampNumber(db, minDb, maxDb)) / (maxDb - minDb) * 238;
+  const plot = { left: 14, right: 874, top: 16, bottom: 306 };
+  const x = (frequency: number) => plot.left + Math.log10(frequency / 20) / Math.log10(20000 / 20) * (plot.right - plot.left);
+  const y = (db: number) => plot.top + (maxDb - clampNumber(db, minDb, maxDb)) / (maxDb - minDb) * (plot.bottom - plot.top);
+  const majorFrequencies = [20, 30, 40, 60, 80, 100, 200, 300, 400, 600, 800, 1000, 2000, 3000, 4000, 6000, 8000, 10000, 20000];
+  const minorFrequencies = [50, 70, 90, 150, 250, 500, 700, 1500, 2500, 5000, 7000, 15000];
+  const horizontalTicks = Array.from({ length: 11 }, (_, index) => maxDb - index * (maxDb - minDb) / 10);
+  const frequencyLabel = (frequency: number) => frequency >= 1000 ? `${frequency / 1000}k` : String(frequency);
+  const linePath = (values: typeof tracks[number]["values"]) => values.map((point, index) => `${index ? "L" : "M"}${x(point.frequency).toFixed(1)},${y(point.db).toFixed(1)}`).join(" ");
+  const areaPath = (values: typeof tracks[number]["values"]) => {
+    if (!values.length) return "";
+    const spectrumPoints = values.map((point) => `${x(point.frequency).toFixed(1)},${y(point.db).toFixed(1)}`).join(" L");
+    return `M${x(values[0].frequency).toFixed(1)},${plot.bottom} L${spectrumPoints} L${x(values[values.length - 1].frequency).toFixed(1)},${plot.bottom} Z`;
+  };
+
   return (
     <div className="spectrum-wrap">
-      <div className="chart-legend">{curves.map((curve) => <span key={curve.key}><i style={{ background: curve.color }} />{curve.label}</span>)}</div>
-      <svg className="spectrum-chart" viewBox="0 0 900 290" role="img" aria-label="Demo and Reference left/right spectrum comparison">
-        {[0, 1, 2, 3, 4].map((line) => <g key={line}><line x1="46" x2="870" y1={18 + line * 59.5} y2={18 + line * 59.5} /><text x="4" y={22 + line * 59.5}>{Math.round(maxDb - line * (maxDb - minDb) / 4)}</text></g>)}
-        {[20, 80, 250, 500, 2000, 4000, 10000, 20000].map((frequency) => <g key={frequency}><line className="vertical" x1={x(frequency)} x2={x(frequency)} y1="18" y2="256" /><text className="frequency-label" x={x(frequency)} y="280" textAnchor="middle">{frequency >= 1000 ? `${frequency / 1000}k` : frequency}</text></g>)}
-        {curves.map((curve) => <polyline key={curve.key} points={curve.values.map((point) => `${x(point.frequency)},${y(point.db)}`).join(" ")} fill="none" stroke={curve.color} strokeWidth="1.8" strokeDasharray={curve.dash} vectorEffect="non-scaling-stroke" />)}
+      <div className="spectrum-toolbar">
+        <div className="chart-legend">{tracks.map((track) => <span key={track.key}><i style={{ "--legend-color": track.color } as React.CSSProperties} />{track.label}</span>)}</div>
+      </div>
+      <div className="spectrum-frame">
+      <svg className="spectrum-chart" viewBox="0 0 920 340" role="img" aria-label="Demo and Reference left/right spectrum comparison">
+        <title>Average spectrum after loudness matching</title>
+        <desc>The Demo average spectrum is shown in cyan and the Reference average spectrum is shown in violet.</desc>
+        <defs>
+          <linearGradient id="spectrum-demo-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#43e2d1" stopOpacity=".58" /><stop offset="1" stopColor="#1f8f89" stopOpacity=".16" /></linearGradient>
+          <linearGradient id="spectrum-reference-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#aa94ff" stopOpacity=".52" /><stop offset="1" stopColor="#6150a8" stopOpacity=".13" /></linearGradient>
+          <clipPath id="spectrum-plot-clip"><rect x={plot.left} y={plot.top} width={plot.right - plot.left} height={plot.bottom - plot.top} rx="4" /></clipPath>
+        </defs>
+        <rect className="spectrum-background" x={plot.left} y={plot.top} width={plot.right - plot.left} height={plot.bottom - plot.top} rx="5" />
+        {horizontalTicks.map((tick, index) => <g key={tick}><line className={index % 2 ? "horizontal minor" : "horizontal"} x1={plot.left} x2={plot.right} y1={y(tick)} y2={y(tick)} /><text className="db-label" x="900" y={y(tick) + 3} textAnchor="end">{Math.round(tick)}</text></g>)}
+        {minorFrequencies.map((frequency) => <line key={frequency} className="vertical minor" x1={x(frequency)} x2={x(frequency)} y1={plot.top} y2={plot.bottom} />)}
+        {majorFrequencies.map((frequency) => <g key={frequency}><line className="vertical" x1={x(frequency)} x2={x(frequency)} y1={plot.top} y2={plot.bottom} /><text className="frequency-label" x={x(frequency)} y="326" textAnchor="middle">{frequencyLabel(frequency)}</text></g>)}
+        <text className="axis-unit" x="904" y="16" textAnchor="end">dBFS</text>
+        <text className="axis-unit" x={plot.right} y="338" textAnchor="end">Hz</text>
+        <g clipPath="url(#spectrum-plot-clip)">
+          {[...tracks].reverse().map((track) => <path key={`${track.key}-area`} className={`spectrum-area ${track.key}`} d={areaPath(track.values)} fill={`url(#${track.gradient})`} />)}
+          {tracks.map((track) => <path key={`${track.key}-mean`} className={`spectrum-mean ${track.key}`} d={linePath(track.values)} stroke={track.color} />)}
+        </g>
       </svg>
+      </div>
       {analysis.demo.meta.codecWarning || analysis.reference.meta.codecWarning ? <div className="codec-banner"><b>Codec limit:</b> high-frequency conclusions are limited to approximately {(Math.min(analysis.demo.meta.comparableHighHz, analysis.reference.meta.comparableHighHz) / 1000).toFixed(0)} kHz.</div> : null}
     </div>
   );
