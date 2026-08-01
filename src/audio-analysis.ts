@@ -1,9 +1,9 @@
 export type BandKey = "sub" | "bass" | "lowMid" | "mid" | "upperMid" | "air";
 
-export type Impact = "Thấp" | "Trung bình" | "Cao";
-export type Confidence = "Thấp" | "Trung bình" | "Cao";
-export type EvidenceSource = "Đo lường" | "Suy luận";
-export type AnalysisSection = "Stereo & không gian" | "EQ & cân bằng phổ" | "Melody & motif" | "Arrangement & reverb" | "Loudness & dynamics" | "Chất lượng file";
+export type Impact = "Low" | "Medium" | "High";
+export type Confidence = "Low" | "Medium" | "High";
+export type EvidenceSource = "Measurement" | "Inference";
+export type AnalysisSection = "Stereo & Spatial Image" | "EQ & Tonal Balance" | "Melody & Motif" | "Arrangement & Reverb" | "Loudness & Dynamics" | "File Quality";
 
 export const BAND_DEFINITIONS: Array<{ key: BandKey; label: string; range: string; from: number; to: number }> = [
   { key: "sub", label: "Sub-bass", range: "20–80 Hz", from: 20, to: 80 },
@@ -107,6 +107,10 @@ export type Finding = {
   evidence: string;
   recommendation: string;
   positive?: boolean;
+  feedbackVi?: {
+    title: string;
+    recommendation: string;
+  };
 };
 
 export type PairAnalysis = {
@@ -124,7 +128,7 @@ export type PairAnalysis = {
   strengths: string[];
   threeBiggestDifferences: string[];
   keepElements: string[];
-  releaseVerdict: "Chưa sẵn sàng phát hành" | "Nên chỉnh trước khi phát hành" | "Có thể phát hành sau khi kiểm tra tai nghe";
+  releaseVerdict: "Not Ready for Release" | "Revisions Recommended Before Release" | "Ready After Final Listening Check";
   qualityScore: number;
   feedback: {
     good: string[];
@@ -609,7 +613,7 @@ function codecAssessment(file: File, duration: number) {
   else if (lossy && bitrateKbps < 145) comparableHighHz = 16500;
   else if (lossy && bitrateKbps < 200) comparableHighHz = 19000;
   if (lossy && bitrateKbps < 104) {
-    codecWarning = `File ${extension.toUpperCase()} khoảng ${Math.round(bitrateKbps)} kbps; không kết luận vùng air trên khoảng ${(comparableHighHz / 1000).toFixed(0)} kHz.`;
+    codecWarning = `${extension.toUpperCase()} file at approximately ${Math.round(bitrateKbps)} kbps; do not draw air-band conclusions above approximately ${(comparableHighHz / 1000).toFixed(0)} kHz.`;
   }
   return { extension, bitrateKbps: round(bitrateKbps, 0), comparableHighHz, codecWarning };
 }
@@ -617,15 +621,15 @@ function codecAssessment(file: File, duration: number) {
 async function analyzeSingle(file: File, onProgress: (fraction: number, label: string) => void) {
   const context = new AudioContext({ sampleRate: ANALYSIS_RATE });
   try {
-    onProgress(0.02, "Đang giải mã file");
+    onProgress(0.02, "Decoding Audio");
     const sourceHeader = await parseSourceHeader(file);
     const buffer = await context.decodeAudioData(await file.arrayBuffer());
-    onProgress(0.12, "Đang đo LUFS và dynamics");
-    const core = await measureCore(buffer, (fraction) => onProgress(0.12 + fraction * 0.48, "Đang đo LUFS, true peak và phase"));
-    onProgress(0.61, "Đang đo phổ từng kênh");
-    const spectral = await analyzeSpectrum(buffer, (fraction) => onProgress(0.61 + fraction * 0.37, "Đang đo phổ L/R và stereo theo dải"));
+    onProgress(0.12, "Measuring Loudness and Dynamics");
+    const core = await measureCore(buffer, (fraction) => onProgress(0.12 + fraction * 0.48, "Measuring LUFS, True Peak, and Phase"));
+    onProgress(0.61, "Analyzing Per-Channel Spectrum");
+    const spectral = await analyzeSpectrum(buffer, (fraction) => onProgress(0.61 + fraction * 0.37, "Measuring L/R Spectrum and Band Stereo"));
     const codec = codecAssessment(file, buffer.duration);
-    onProgress(1, "Hoàn tất file");
+    onProgress(1, "Track Analysis Complete");
     return {
       meta: {
         name: file.name,
@@ -651,7 +655,7 @@ async function analyzeSingle(file: File, onProgress: (fraction: number, label: s
 function findBandTimestamp(demo: AudioMetrics, reference: AudioMetrics, key: BandKey, demoGain: number, referenceGain: number, expectedSign: number) {
   const demoFrames = demo.spectral.timeline;
   const referenceFrames = reference.spectral.timeline;
-  if (!demoFrames.length || !referenceFrames.length) return "Toàn bài";
+  if (!demoFrames.length || !referenceFrames.length) return "Full Track";
   let best = { score: -Infinity, time: demo.meta.duration * 0.5 };
   demoFrames.forEach((frame, index) => {
     const progress = demoFrames.length === 1 ? 0 : index / (demoFrames.length - 1);
@@ -666,48 +670,64 @@ function findBandTimestamp(demo: AudioMetrics, reference: AudioMetrics, key: Ban
 
 function impactFromDelta(delta: number): Impact {
   const magnitude = Math.abs(delta);
-  if (magnitude >= 3) return "Cao";
-  if (magnitude >= 1.7) return "Trung bình";
-  return "Thấp";
+  if (magnitude >= 3) return "High";
+  if (magnitude >= 1.7) return "Medium";
+  return "Low";
 }
 
 function bandRecommendation(key: BandKey, delta: number) {
   const excessive = delta > 0;
   const magnitude = Math.abs(delta) >= 3 ? "2–3 dB" : "1–2 dB";
-  const recommendations: Record<BandKey, { source: string; excess: string; deficit: string }> = {
+  const recommendations: Record<BandKey, { source: string; excess: string; deficit: string; excessVi: string; deficitVi: string }> = {
     sub: {
-      source: "sub, drone hoặc phần low của pad",
-      excess: `Kiểm tra sub/bass bus trước, thử dynamic EQ giảm ${magnitude} trong 30–80 Hz. Giữ vùng dưới khoảng 80–100 Hz ở mono; không thu hẹp toàn bộ master.`,
-      deficit: `Kiểm tra fundamental của bass/drone, thử low-shelf rất nhẹ ${magnitude} trên nguồn phù hợp thay vì nâng toàn master. Giữ sub ổn định ở giữa.`,
+      source: "the sub, drone, or low pad layer",
+      excess: `Check the sub/bass bus first and try ${magnitude} of dynamic EQ reduction at 30–80 Hz. Keep content below approximately 80–100 Hz mono; do not narrow the entire master.`,
+      deficit: `Check the bass or drone fundamental and try a very gentle ${magnitude} low shelf on the appropriate source instead of lifting the full master. Keep the sub stable in the center.`,
+      excessVi: `Kiểm tra sub/bass bus trước, thử dynamic EQ giảm ${magnitude} trong 30–80 Hz. Giữ vùng dưới khoảng 80–100 Hz ở mono; không thu hẹp toàn bộ master.`,
+      deficitVi: `Kiểm tra fundamental của bass/drone, thử low-shelf rất nhẹ ${magnitude} trên nguồn phù hợp thay vì nâng toàn master. Giữ sub ổn định ở giữa.`,
     },
     bass: {
-      source: "bass, thân pad hoặc reverb low-end",
-      excess: `Kiểm tra bass và pad bus, thử dynamic EQ giảm ${magnitude} trong 90–220 Hz hoặc sidechain nhẹ khi piano/pad cùng hoạt động.`,
-      deficit: `Thử bổ sung thân cho pad/bass ${magnitude} trong 100–220 Hz trên track hoặc bus; tránh boost nếu mono đã bị tích tụ.`,
+      source: "the bass, pad body, or low-end reverb",
+      excess: `Check the bass and pad buses. Try ${magnitude} of dynamic EQ reduction at 90–220 Hz, or light sidechain control when the piano and pad overlap.`,
+      deficit: `Try adding ${magnitude} of body at 100–220 Hz on the pad, bass track, or bus. Avoid boosting if the mono signal is already congested.`,
+      excessVi: `Kiểm tra bass và pad bus, thử dynamic EQ giảm ${magnitude} trong 90–220 Hz hoặc sidechain nhẹ khi piano/pad cùng hoạt động.`,
+      deficitVi: `Thử bổ sung thân cho pad/bass ${magnitude} trong 100–220 Hz trên track hoặc bus; tránh boost nếu mono đã bị tích tụ.`,
     },
     lowMid: {
-      source: "thân pad, piano hoặc đuôi reverb",
-      excess: `Kiểm tra pad bus và reverb return, thử dynamic EQ giảm ${magnitude} quanh 280–420 Hz. Có thể high-pass reverb nhẹ để tránh tích tụ.`,
-      deficit: `Thử tăng rất rộng ${magnitude} quanh 280–450 Hz trên pad/piano bus để có thêm độ ấm; tránh làm master bị bí.`,
+      source: "the pad body, piano, or reverb tail",
+      excess: `Check the pad bus and reverb return. Try ${magnitude} of dynamic EQ reduction around 280–420 Hz, with a gentle reverb high-pass if needed to control buildup.`,
+      deficit: `Try a very broad ${magnitude} lift around 280–450 Hz on the pad or piano bus for warmth, while avoiding congestion on the master.`,
+      excessVi: `Kiểm tra pad bus và reverb return, thử dynamic EQ giảm ${magnitude} quanh 280–420 Hz. Có thể high-pass reverb nhẹ để tránh tích tụ.`,
+      deficitVi: `Thử tăng rất rộng ${magnitude} quanh 280–450 Hz trên pad/piano bus để có thêm độ ấm; tránh làm master bị bí.`,
     },
     mid: {
-      source: "piano, motif hoặc harmonic của pad",
-      excess: `Đưa piano/motif lùi nhẹ hoặc giảm EQ rộng ${magnitude} trong 700 Hz–1.8 kHz trên nguồn gây nổi; ưu tiên automation hơn ép master.`,
-      deficit: `Thử tăng harmonic hoặc EQ rộng ${magnitude} trong 700 Hz–1.8 kHz trên piano/pad để melody không bị mỏng.`,
+      source: "the piano, motif, or pad harmonics",
+      excess: `Move the piano or motif back slightly, or apply a broad ${magnitude} cut at 700 Hz–1.8 kHz on the prominent source. Prefer automation over master processing.`,
+      deficit: `Try adding harmonics or a broad ${magnitude} lift at 700 Hz–1.8 kHz on the piano or pad so the melody does not feel thin.`,
+      excessVi: `Đưa piano/motif lùi nhẹ hoặc giảm EQ rộng ${magnitude} trong 700 Hz–1.8 kHz trên nguồn gây nổi; ưu tiên automation hơn ép master.`,
+      deficitVi: `Thử tăng harmonic hoặc EQ rộng ${magnitude} trong 700 Hz–1.8 kHz trên piano/pad để melody không bị mỏng.`,
     },
     upperMid: {
-      source: "attack piano, bell hoặc texture sáng",
-      excess: `Dùng dynamic EQ trên piano/texture giảm ${magnitude} trong 2–4 kHz khi note đánh vào; hạ velocity/attack nếu âm vẫn sắc.`,
-      deficit: `Nếu melody bị lùi quá sâu, thử tăng rất nhẹ ${magnitude} trong 2–3.5 kHz trên track melody, không cần nâng cả master.`,
+      source: "the piano attack, bell, or bright texture",
+      excess: `Use dynamic EQ on the piano or texture for ${magnitude} of reduction at 2–4 kHz when notes hit. Lower velocity or soften the attack if it still feels sharp.`,
+      deficit: `If the melody sits too far back, try a very gentle ${magnitude} lift at 2–3.5 kHz on the melody track instead of raising the full master.`,
+      excessVi: `Dùng dynamic EQ trên piano/texture giảm ${magnitude} trong 2–4 kHz khi note đánh vào; hạ velocity/attack nếu âm vẫn sắc.`,
+      deficitVi: `Nếu melody bị lùi quá sâu, thử tăng rất nhẹ ${magnitude} trong 2–3.5 kHz trên track melody, không cần nâng cả master.`,
     },
     air: {
-      source: "texture, ambience, reverb hoặc noise layer",
-      excess: `Thử high-shelf giảm ${magnitude} từ 7–10 kHz trên texture/reverb hoặc high-cut reverb để tránh chói khi nghe lâu.`,
-      deficit: `Thử mở high-shelf ${magnitude} từ 8–10 kHz trên ambience/reverb, hoặc thêm texture rất nhẹ; không boost vùng codec đã cắt.`,
+      source: "the texture, ambience, reverb, or noise layer",
+      excess: `Try a ${magnitude} high-shelf reduction from 7–10 kHz on the texture or reverb, or high-cut the reverb to reduce long-term listening fatigue.`,
+      deficit: `Try opening the ambience or reverb with a ${magnitude} high shelf from 8–10 kHz, or add a very subtle texture. Do not boost above the codec cutoff.`,
+      excessVi: `Thử high-shelf giảm ${magnitude} từ 7–10 kHz trên texture/reverb hoặc high-cut reverb để tránh chói khi nghe lâu.`,
+      deficitVi: `Thử mở high-shelf ${magnitude} từ 8–10 kHz trên ambience/reverb, hoặc thêm texture rất nhẹ; không boost vùng codec đã cắt.`,
     },
   };
   const item = recommendations[key];
-  return { likelySource: item.source, action: excessive ? item.excess : item.deficit };
+  return {
+    likelySource: item.source,
+    action: excessive ? item.excess : item.deficit,
+    actionVi: excessive ? item.excessVi : item.deficitVi,
+  };
 }
 
 function buildPairAnalysis(demo: AudioMetrics, reference: AudioMetrics): PairAnalysis {
@@ -741,25 +761,27 @@ function buildPairAnalysis(demo: AudioMetrics, reference: AudioMetrics): PairAna
 
   if (demo.stereo.polarityRisk) {
     add({
-      title: "Cảnh báo đảo cực hoặc lệch phase nghiêm trọng",
-      section: "Stereo & không gian",
-      impact: "Cao",
-      confidence: "Cao",
-      source: "Đo lường",
-      timestamp: "Toàn bài",
-      evidence: `Correlation tổng thể ${demo.stereo.correlation.toFixed(2)} và năng lượng mono giảm ${Math.abs(demo.stereo.monoRetentionDb).toFixed(1)} dB. Đây nhiều khả năng là lỗi file, không phải lựa chọn master.`,
-      recommendation: "Kiểm tra polarity từng kênh, xuất lại file stereo sạch và phân tích lại. Không tiếp tục master trên file hiện tại.",
+      title: "Severe polarity or phase conflict detected",
+      section: "Stereo & Spatial Image",
+      impact: "High",
+      confidence: "High",
+      source: "Measurement",
+      timestamp: "Full Track",
+      evidence: `Overall correlation is ${demo.stereo.correlation.toFixed(2)}, with approximately ${Math.abs(demo.stereo.monoRetentionDb).toFixed(1)} dB of energy lost in mono. This is likely a file issue rather than a mastering choice.`,
+      recommendation: "Check the polarity of each channel, export a clean stereo file, and analyze it again. Do not continue mastering with the current file.",
+      feedbackVi: { title: "Cảnh báo đảo cực hoặc lệch phase nghiêm trọng", recommendation: "Kiểm tra polarity từng kênh, xuất lại file stereo sạch và phân tích lại. Không tiếp tục master trên file hiện tại." },
     });
   } else if (demo.stereo.correlation < 0.1 || demo.stereo.monoRetentionDb < -4.5) {
     add({
-      title: "Khả năng tương thích mono yếu",
-      section: "Stereo & không gian",
-      impact: demo.stereo.correlation < 0 ? "Cao" : "Trung bình",
-      confidence: "Cao",
-      source: "Đo lường",
-      timestamp: "Toàn bài",
-      evidence: `Correlation ${demo.stereo.correlation.toFixed(2)}; khi gộp mono mất khoảng ${Math.abs(demo.stereo.monoRetentionDb).toFixed(1)} dB năng lượng.`,
-      recommendation: "Kiểm tra chorus, stereo delay và reverb return. Giảm Side hoặc chỉnh lệch thời gian trên nguồn gây lỗi; không dùng stereo imager trên toàn master.",
+      title: "Weak mono compatibility",
+      section: "Stereo & Spatial Image",
+      impact: demo.stereo.correlation < 0 ? "High" : "Medium",
+      confidence: "High",
+      source: "Measurement",
+      timestamp: "Full Track",
+      evidence: `Correlation is ${demo.stereo.correlation.toFixed(2)}; the mono fold-down loses approximately ${Math.abs(demo.stereo.monoRetentionDb).toFixed(1)} dB of energy.`,
+      recommendation: "Check chorus, stereo delay, and reverb returns. Reduce Side level or timing offsets on the source causing the issue; do not use a stereo imager across the full master.",
+      feedbackVi: { title: "Khả năng tương thích mono yếu", recommendation: "Kiểm tra chorus, stereo delay và reverb return. Giảm Side hoặc chỉnh lệch thời gian trên nguồn gây lỗi; không dùng stereo imager trên toàn master." },
     });
   }
 
@@ -767,14 +789,15 @@ function buildPairAnalysis(demo: AudioMetrics, reference: AudioMetrics): PairAna
   const subReference = reference.spectral.bands.sub;
   if (subDemo.widthPercent > 32 && subDemo.widthPercent > subReference.widthPercent + 12) {
     add({
-      title: "Sub-bass rộng hơn Reference",
-      section: "Stereo & không gian",
-      impact: subDemo.correlation < 0.45 ? "Cao" : "Trung bình",
-      confidence: "Cao",
-      source: "Đo lường",
+      title: "Sub-bass is wider than the Reference",
+      section: "Stereo & Spatial Image",
+      impact: subDemo.correlation < 0.45 ? "High" : "Medium",
+      confidence: "High",
+      source: "Measurement",
       timestamp: findBandTimestamp(demo, reference, "sub", demoGainDb, referenceGainDb, 1),
-      evidence: `Độ rộng 20–80 Hz của Demo ${subDemo.widthPercent.toFixed(0)}%, Reference ${subReference.widthPercent.toFixed(0)}%; correlation dải sub của Demo ${subDemo.correlation.toFixed(2)}.`,
-      recommendation: "Giữ phần dưới khoảng 80–100 Hz ở mono trên sub/bass bus. Chỉ thu hẹp low-end, không thu hẹp pad và ambience phía trên.",
+      evidence: `Width at 20–80 Hz is ${subDemo.widthPercent.toFixed(0)}% in the Demo and ${subReference.widthPercent.toFixed(0)}% in the Reference; Demo sub-band correlation is ${subDemo.correlation.toFixed(2)}.`,
+      recommendation: "Keep content below approximately 80–100 Hz mono on the sub or bass bus. Narrow only the low end, not the pads and ambience above it.",
+      feedbackVi: { title: "Sub-bass rộng hơn Reference", recommendation: "Giữ phần dưới khoảng 80–100 Hz ở mono trên sub/bass bus. Chỉ thu hẹp low-end, không thu hẹp pad và ambience phía trên." },
     });
   }
 
@@ -782,29 +805,36 @@ function buildPairAnalysis(demo: AudioMetrics, reference: AudioMetrics): PairAna
   if (Math.abs(widthDelta) >= 18) {
     const narrower = widthDelta < 0;
     add({
-      title: narrower ? "Không gian stereo hẹp hơn Reference" : "Không gian stereo rộng hơn Reference",
-      section: "Stereo & không gian",
-      impact: Math.abs(widthDelta) > 35 ? "Cao" : "Trung bình",
-      confidence: "Cao",
-      source: "Đo lường",
-      timestamp: "Toàn bài",
-      evidence: `Tỷ lệ Side/Mid quy đổi của Demo ${demo.stereo.widthPercent.toFixed(0)}%, Reference ${reference.stereo.widthPercent.toFixed(0)}%.`,
+      title: narrower ? "Stereo image is narrower than the Reference" : "Stereo image is wider than the Reference",
+      section: "Stereo & Spatial Image",
+      impact: Math.abs(widthDelta) > 35 ? "High" : "Medium",
+      confidence: "High",
+      source: "Measurement",
+      timestamp: "Full Track",
+      evidence: `The derived Side-to-Mid width is ${demo.stereo.widthPercent.toFixed(0)}% in the Demo and ${reference.stereo.widthPercent.toFixed(0)}% in the Reference.`,
       recommendation: narrower
-        ? "Mở riêng pad, texture, ambience hoặc reverb return ở mid/high. Giữ piano chính và low-end ổn định ở giữa; không mở toàn bộ master."
-        : "Giảm width trên texture/reverb gây rộng quá mức, ưu tiên automation hoặc M/S EQ theo dải. Giữ phần center rõ và kiểm tra mono sau mỗi thay đổi.",
+        ? "Widen only the pad, texture, ambience, or reverb returns in the mid and high bands. Keep the main piano and low end stable in the center; do not widen the entire master."
+        : "Reduce width on the texture or reverb causing the excess. Prefer automation or band-specific M/S EQ, preserve a clear center, and check mono after each change.",
+      feedbackVi: {
+        title: narrower ? "Không gian stereo hẹp hơn Reference" : "Không gian stereo rộng hơn Reference",
+        recommendation: narrower
+          ? "Mở riêng pad, texture, ambience hoặc reverb return ở mid/high. Giữ piano chính và low-end ổn định ở giữa; không mở toàn bộ master."
+          : "Giảm width trên texture/reverb gây rộng quá mức, ưu tiên automation hoặc M/S EQ theo dải. Giữ phần center rõ và kiểm tra mono sau mỗi thay đổi.",
+      },
     });
   }
 
   if (Math.abs(demo.stereo.balanceDb) > 1 && Math.abs(demo.stereo.balanceDb) > Math.abs(reference.stereo.balanceDb) + 0.5) {
     add({
-      title: "Cân bằng trái/phải chưa ổn định",
-      section: "Stereo & không gian",
-      impact: Math.abs(demo.stereo.balanceDb) > 2 ? "Cao" : "Trung bình",
-      confidence: "Cao",
-      source: "Đo lường",
-      timestamp: "Toàn bài",
-      evidence: `Demo lệch ${Math.abs(demo.stereo.balanceDb).toFixed(1)} dB về ${demo.stereo.balanceDb > 0 ? "trái" : "phải"}; Reference lệch ${Math.abs(reference.stereo.balanceDb).toFixed(1)} dB.`,
-      recommendation: "Kiểm tra pan/volume của pad, ambience và reverb return. Chỉnh tại track hoặc bus gây lệch, không cân lại bằng master nếu chỉ một layer là nguyên nhân.",
+      title: "Left/right balance is unstable",
+      section: "Stereo & Spatial Image",
+      impact: Math.abs(demo.stereo.balanceDb) > 2 ? "High" : "Medium",
+      confidence: "High",
+      source: "Measurement",
+      timestamp: "Full Track",
+      evidence: `The Demo leans ${Math.abs(demo.stereo.balanceDb).toFixed(1)} dB to the ${demo.stereo.balanceDb > 0 ? "left" : "right"}; the Reference offset is ${Math.abs(reference.stereo.balanceDb).toFixed(1)} dB.`,
+      recommendation: "Check the pan and level of pads, ambience, and reverb returns. Correct the source track or bus rather than rebalancing the master when only one layer is responsible.",
+      feedbackVi: { title: "Cân bằng trái/phải chưa ổn định", recommendation: "Kiểm tra pan/volume của pad, ambience và reverb return. Chỉnh tại track hoặc bus gây lệch, không cân lại bằng master nếu chỉ một layer là nguyên nhân." },
     });
   }
 
@@ -812,17 +842,19 @@ function buildPairAnalysis(demo: AudioMetrics, reference: AudioMetrics): PairAna
     const threshold = comparison.key === "air" && comparableHighHz < 17000 ? 2 : 1.35;
     if (Math.abs(comparison.deltaDb) < threshold) continue;
     const recommendation = bandRecommendation(comparison.key, comparison.deltaDb);
-    const direction = comparison.deltaDb > 0 ? "nhiều hơn" : "ít hơn";
-    const codecNote = comparison.key === "air" && comparableHighHz < 20000 ? ` Chỉ so sánh đáng tin tới khoảng ${(comparableHighHz / 1000).toFixed(0)} kHz do giới hạn codec.` : "";
+    const direction = comparison.deltaDb > 0 ? "has more energy than" : "has less energy than";
+    const directionVi = comparison.deltaDb > 0 ? "nhiều hơn" : "ít hơn";
+    const codecNote = comparison.key === "air" && comparableHighHz < 20000 ? ` The comparison is reliable only up to approximately ${(comparableHighHz / 1000).toFixed(0)} kHz because of codec limits.` : "";
     add({
       title: `${comparison.label} ${direction} Reference`,
-      section: "EQ & cân bằng phổ",
+      section: "EQ & Tonal Balance",
       impact: impactFromDelta(comparison.deltaDb),
-      confidence: comparison.key === "air" && comparableHighHz < 17000 ? "Trung bình" : "Cao",
-      source: "Đo lường",
+      confidence: comparison.key === "air" && comparableHighHz < 17000 ? "Medium" : "High",
+      source: "Measurement",
       timestamp: comparison.timestamp,
-      evidence: `Sau loudness-match, Demo chênh ${signed(comparison.deltaDb)} dB ở ${comparison.range}; kênh L ${signed(comparison.leftDeltaDb)} dB, kênh R ${signed(comparison.rightDeltaDb)} dB.${codecNote} Thành phần có khả năng liên quan: ${recommendation.likelySource}.`,
+      evidence: `After loudness matching, the Demo differs by ${signed(comparison.deltaDb)} dB at ${comparison.range}; left channel ${signed(comparison.leftDeltaDb)} dB, right channel ${signed(comparison.rightDeltaDb)} dB.${codecNote} The likely source is ${recommendation.likelySource}.`,
       recommendation: recommendation.action,
+      feedbackVi: { title: `${comparison.label} ${directionVi} Reference`, recommendation: recommendation.actionVi },
     });
   }
 
@@ -844,14 +876,15 @@ function buildPairAnalysis(demo: AudioMetrics, reference: AudioMetrics): PairAna
   });
   if (resonance) {
     add({
-      title: "Có đỉnh phổ hẹp cần kiểm tra bằng tai",
-      section: "EQ & cân bằng phổ",
-      impact: resonance.prominenceDb > 6 ? "Trung bình" : "Thấp",
-      confidence: "Trung bình",
-      source: "Đo lường",
-      timestamp: "Xuất hiện theo nhiều đoạn",
-      evidence: `Phổ trung bình có độ nhô cục bộ khoảng ${resonance.prominenceDb.toFixed(1)} dB quanh ${Math.round(resonance.frequency)} Hz. Phép đo chưa đủ để khẳng định đây là resonance khó chịu.`,
-      recommendation: `Solo kiểm tra nguồn quanh ${Math.round(resonance.frequency)} Hz. Nếu nghe ra tiếng ngân cố định, thử dynamic EQ hẹp giảm 1–2 dB trên track gây ra, không notch master ngay lập tức.`,
+      title: "Narrow spectral peak requires a listening check",
+      section: "EQ & Tonal Balance",
+      impact: resonance.prominenceDb > 6 ? "Medium" : "Low",
+      confidence: "Medium",
+      source: "Measurement",
+      timestamp: "Across Multiple Sections",
+      evidence: `The average spectrum shows a local prominence of approximately ${resonance.prominenceDb.toFixed(1)} dB around ${Math.round(resonance.frequency)} Hz. This measurement alone does not confirm an audible resonance.`,
+      recommendation: `Solo the likely source around ${Math.round(resonance.frequency)} Hz. If a fixed ringing tone is audible, try 1–2 dB of narrow dynamic EQ reduction on that track; do not notch the master immediately.`,
+      feedbackVi: { title: "Có đỉnh phổ hẹp cần kiểm tra bằng tai", recommendation: `Solo kiểm tra nguồn quanh ${Math.round(resonance.frequency)} Hz. Nếu nghe ra tiếng ngân cố định, thử dynamic EQ hẹp giảm 1–2 dB trên track gây ra, không notch master ngay lập tức.` },
     });
   }
 
@@ -862,192 +895,208 @@ function buildPairAnalysis(demo: AudioMetrics, reference: AudioMetrics): PairAna
   const upperLevelDelta = bands.find((band) => band.key === "upperMid")?.deltaDb ?? 0;
   if (demo.meta.duration >= 30 && onsetRatio > 1.28 && demoOnsets - referenceOnsets > 1.2) {
     add({
-      title: "Chuyển động tiền cảnh có thể dày hơn Reference",
-      section: "Melody & motif",
-      impact: onsetRatio > 1.65 ? "Cao" : "Trung bình",
-      confidence: "Trung bình",
-      source: "Suy luận",
-      timestamp: demo.motion.suddenEvents[0] ? formatTimestamp(demo.motion.suddenEvents[0].time) : "Toàn bài",
-      evidence: `Chỉ số onset vùng 500 Hz–4 kHz của Demo khoảng ${demoOnsets.toFixed(1)}/phút, Reference ${referenceOnsets.toFixed(1)}/phút. Từ mix stereo, số đo này có thể bao gồm piano, texture và transient khác.`,
-      recommendation: "Kiểm tra motif/piano: thử bỏ bớt note, kéo dài note, tăng khoảng nghỉ và hạ velocity. Giữ chuyển động đều, tránh note cao hoặc onset xuất hiện đột ngột.",
+      title: "Foreground movement may be denser than the Reference",
+      section: "Melody & Motif",
+      impact: onsetRatio > 1.65 ? "High" : "Medium",
+      confidence: "Medium",
+      source: "Inference",
+      timestamp: demo.motion.suddenEvents[0] ? formatTimestamp(demo.motion.suddenEvents[0].time) : "Full Track",
+      evidence: `The 500 Hz–4 kHz onset proxy is approximately ${demoOnsets.toFixed(1)} per minute in the Demo and ${referenceOnsets.toFixed(1)} per minute in the Reference. In a stereo mix, this may include piano, textures, and other transients.`,
+      recommendation: "Review the motif or piano. Try fewer or longer notes, more space between phrases, and lower velocity. Keep movement even and avoid sudden high notes or onsets.",
+      feedbackVi: { title: "Chuyển động tiền cảnh có thể dày hơn Reference", recommendation: "Kiểm tra motif/piano: thử bỏ bớt note, kéo dài note, tăng khoảng nghỉ và hạ velocity. Giữ chuyển động đều, tránh note cao hoặc onset xuất hiện đột ngột." },
     });
   } else if (Math.abs(onsetRatio - 1) < 0.3 && midLevelDelta + upperLevelDelta > 3) {
     add({
-      title: "Melody có thể nổi do level/độ sáng, không phải do nhiều note",
-      section: "Melody & motif",
-      impact: "Trung bình",
-      confidence: "Trung bình",
-      source: "Suy luận",
-      timestamp: "Toàn bài",
-      evidence: `Mật độ onset gần Reference nhưng tổng chênh mid và upper-mid của Demo là ${signed(midLevelDelta + upperLevelDelta)} dB sau loudness-match.`,
-      recommendation: "Giữ số note nếu motif đang hợp lý; thử hạ level piano, giảm 2–4 kHz, làm attack mềm hơn và tăng reverb send để đưa melody lùi vào không gian.",
+      title: "Melody prominence may come from level or brightness, not note density",
+      section: "Melody & Motif",
+      impact: "Medium",
+      confidence: "Medium",
+      source: "Inference",
+      timestamp: "Full Track",
+      evidence: `Onset density is close to the Reference, but the combined mid and upper-mid difference in the Demo is ${signed(midLevelDelta + upperLevelDelta)} dB after loudness matching.`,
+      recommendation: "Keep the note count if the motif works. Try lowering the piano, reducing 2–4 kHz, softening the attack, and increasing reverb send to place the melody deeper in the space.",
+      feedbackVi: { title: "Melody có thể nổi do level/độ sáng, không phải do nhiều note", recommendation: "Giữ số note nếu motif đang hợp lý; thử hạ level piano, giảm 2–4 kHz, làm attack mềm hơn và tăng reverb send để đưa melody lùi vào không gian." },
     });
   }
 
   const lowMidDelta = bands.find((band) => band.key === "lowMid")?.deltaDb ?? 0;
   if (lowMidDelta > 1.5 && demo.stereo.widthPercent > reference.stereo.widthPercent + 8) {
     add({
-      title: "Đuôi reverb hoặc pad có thể tích tụ low-mid",
-      section: "Arrangement & reverb",
-      impact: lowMidDelta > 3 ? "Cao" : "Trung bình",
-      confidence: "Trung bình",
-      source: "Suy luận",
-      timestamp: bands.find((band) => band.key === "lowMid")?.timestamp ?? "Toàn bài",
-      evidence: `Demo vừa rộng hơn vừa dư ${signed(lowMidDelta)} dB ở 250–500 Hz, mẫu thường gặp khi pad/reverb return bị tích tụ.`,
-      recommendation: "Kiểm tra reverb return: thử low-cut 150–250 Hz, dynamic EQ nhẹ 280–420 Hz, high-cut mềm 6–10 kHz và giảm decay nếu các câu bị chồng đuôi. Có thể sidechain reverb rất nhẹ theo piano.",
+      title: "Reverb tails or pads may be building up in the low mids",
+      section: "Arrangement & Reverb",
+      impact: lowMidDelta > 3 ? "High" : "Medium",
+      confidence: "Medium",
+      source: "Inference",
+      timestamp: bands.find((band) => band.key === "lowMid")?.timestamp ?? "Full Track",
+      evidence: `The Demo is both wider and ${signed(lowMidDelta)} dB higher at 250–500 Hz, a pattern often associated with pad or reverb-return buildup.`,
+      recommendation: "Check the reverb return. Try a 150–250 Hz low cut, gentle dynamic EQ at 280–420 Hz, a soft 6–10 kHz high cut, and shorter decay if phrase tails overlap. Very light piano-triggered reverb sidechain may help.",
+      feedbackVi: { title: "Đuôi reverb hoặc pad có thể tích tụ low-mid", recommendation: "Kiểm tra reverb return: thử low-cut 150–250 Hz, dynamic EQ nhẹ 280–420 Hz, high-cut mềm 6–10 kHz và giảm decay nếu các câu bị chồng đuôi. Có thể sidechain reverb rất nhẹ theo piano." },
     });
   }
 
   if (demo.motion.suddenEvents.length > Math.max(2, reference.motion.suddenEvents.length + 1)) {
     const event = demo.motion.suddenEvents[0];
     add({
-      title: "Có thay đổi level đột ngột dễ gây giật mình",
-      section: "Loudness & dynamics",
-      impact: event.jumpDb > 8 ? "Cao" : "Trung bình",
-      confidence: "Cao",
-      source: "Đo lường",
+      title: "Sudden level change may interrupt a calm listening experience",
+      section: "Loudness & Dynamics",
+      impact: event.jumpDb > 8 ? "High" : "Medium",
+      confidence: "High",
+      source: "Measurement",
       timestamp: formatTimestamp(event.time),
-      evidence: `Đo được mức tăng ngắn hạn khoảng ${event.jumpDb.toFixed(1)} dB; Demo có ${demo.motion.suddenEvents.length} sự kiện đáng chú ý, Reference có ${reference.motion.suddenEvents.length}.`,
-      recommendation: "Kiểm tra note/layer xuất hiện tại timestamp, hạ velocity hoặc volume, làm fade-in dài hơn và dùng automation thay vì limiter để che cú nhảy.",
+      evidence: `A short-term rise of approximately ${event.jumpDb.toFixed(1)} dB was measured. The Demo has ${demo.motion.suddenEvents.length} notable events; the Reference has ${reference.motion.suddenEvents.length}.`,
+      recommendation: "Check the note or layer entering at this timestamp. Lower its velocity or level, lengthen the fade-in, and use automation instead of a limiter to mask the jump.",
+      feedbackVi: { title: "Có thay đổi level đột ngột dễ gây giật mình", recommendation: "Kiểm tra note/layer xuất hiện tại timestamp, hạ velocity hoặc volume, làm fade-in dài hơn và dùng automation thay vì limiter để che cú nhảy." },
     });
   }
 
   if (demo.loudness.truePeakDbtp > -1) {
     add({
-      title: "True peak thiếu headroom",
-      section: "Loudness & dynamics",
-      impact: demo.loudness.truePeakDbtp > -0.2 ? "Cao" : "Trung bình",
-      confidence: "Cao",
-      source: "Đo lường",
-      timestamp: "Toàn bài",
-      evidence: `True peak ước tính 4× của Demo là ${demo.loudness.truePeakDbtp.toFixed(1)} dBTP.`,
-      recommendation: "Hạ ceiling limiter về khoảng -1.0 đến -1.5 dBTP và kiểm tra lại sau encode. Với nhạc ngủ, ưu tiên headroom và độ mềm hơn độ to tối đa.",
+      title: "True peak headroom is limited",
+      section: "Loudness & Dynamics",
+      impact: demo.loudness.truePeakDbtp > -0.2 ? "High" : "Medium",
+      confidence: "High",
+      source: "Measurement",
+      timestamp: "Full Track",
+      evidence: `The Demo's estimated 4× true peak is ${demo.loudness.truePeakDbtp.toFixed(1)} dBTP.`,
+      recommendation: "Lower the limiter ceiling to approximately -1.0 to -1.5 dBTP and check again after encoding. For sleep music, prioritize headroom and softness over maximum loudness.",
+      feedbackVi: { title: "True peak thiếu headroom", recommendation: "Hạ ceiling limiter về khoảng -1.0 đến -1.5 dBTP và kiểm tra lại sau encode. Với nhạc ngủ, ưu tiên headroom và độ mềm hơn độ to tối đa." },
     });
   }
 
   if (demo.loudness.integratedLufs > -16) {
     add({
-      title: "Master đang khá nóng đối với nhạc ngủ",
-      section: "Loudness & dynamics",
-      impact: demo.loudness.integratedLufs > -13.5 ? "Cao" : "Trung bình",
-      confidence: "Cao",
-      source: "Đo lường",
-      timestamp: "Toàn bài",
-      evidence: `Demo đo được ${demo.loudness.integratedLufs.toFixed(1)} LUFS-I. Reference là ${reference.loudness.integratedLufs.toFixed(1)} LUFS-I; mức to không được dùng để đánh giá màu sắc.`,
-      recommendation: "Không chạy theo Reference nếu Reference quá nóng. Thử mục tiêu khoảng -18 đến -20 LUFS-I, giữ transient mềm và để nền tảng tự chuẩn hóa.",
+      title: "The master is relatively loud for sleep music",
+      section: "Loudness & Dynamics",
+      impact: demo.loudness.integratedLufs > -13.5 ? "High" : "Medium",
+      confidence: "High",
+      source: "Measurement",
+      timestamp: "Full Track",
+      evidence: `The Demo measures ${demo.loudness.integratedLufs.toFixed(1)} LUFS-I and the Reference measures ${reference.loudness.integratedLufs.toFixed(1)} LUFS-I. Loudness is not used to judge tonal quality.`,
+      recommendation: "Do not chase the Reference if it is excessively loud. Try a target around -18 to -20 LUFS-I, preserve soft transients, and let the platform apply normalization.",
+      feedbackVi: { title: "Master đang khá nóng đối với nhạc ngủ", recommendation: "Không chạy theo Reference nếu Reference quá nóng. Thử mục tiêu khoảng -18 đến -20 LUFS-I, giữ transient mềm và để nền tảng tự chuẩn hóa." },
     });
   }
 
   if (demo.loudness.lraLu + 1.5 < reference.loudness.lraLu && demo.loudness.crestFactorDb + 1 < reference.loudness.crestFactorDb) {
     add({
-      title: "Dynamics phẳng hơn Reference",
-      section: "Loudness & dynamics",
-      impact: "Trung bình",
-      confidence: "Cao",
-      source: "Đo lường",
-      timestamp: "Toàn bài",
-      evidence: `Demo LRA ${demo.loudness.lraLu.toFixed(1)} LU và crest ${demo.loudness.crestFactorDb.toFixed(1)} dB; Reference lần lượt ${reference.loudness.lraLu.toFixed(1)} LU và ${reference.loudness.crestFactorDb.toFixed(1)} dB.`,
-      recommendation: "Giảm gain reduction trên bus/limiter, nới attack/release và dùng volume automation để giữ chuyển động tự nhiên thay vì nén thêm.",
+      title: "Dynamics are flatter than the Reference",
+      section: "Loudness & Dynamics",
+      impact: "Medium",
+      confidence: "High",
+      source: "Measurement",
+      timestamp: "Full Track",
+      evidence: `The Demo has ${demo.loudness.lraLu.toFixed(1)} LU of LRA and a ${demo.loudness.crestFactorDb.toFixed(1)} dB crest factor; the Reference measures ${reference.loudness.lraLu.toFixed(1)} LU and ${reference.loudness.crestFactorDb.toFixed(1)} dB respectively.`,
+      recommendation: "Reduce bus or limiter gain reduction, relax attack and release settings, and use volume automation to preserve natural movement instead of adding compression.",
+      feedbackVi: { title: "Dynamics phẳng hơn Reference", recommendation: "Giảm gain reduction trên bus/limiter, nới attack/release và dùng volume automation để giữ chuyển động tự nhiên thay vì nén thêm." },
     });
   }
 
   if (demo.motion.outroCutRisk) {
     add({
-      title: "Outro có nguy cơ bị cắt khi vẫn còn nghe rõ",
-      section: "Loudness & dynamics",
-      impact: demo.motion.outroEndDb > -40 ? "Cao" : "Trung bình",
-      confidence: "Cao",
-      source: "Đo lường",
+      title: "The outro may be cut while still audible",
+      section: "Loudness & Dynamics",
+      impact: demo.motion.outroEndDb > -40 ? "High" : "Medium",
+      confidence: "High",
+      source: "Measurement",
       timestamp: `${formatTimestamp(Math.max(0, demo.meta.duration - 5))}–${formatTimestamp(demo.meta.duration)}`,
-      evidence: `100 ms cuối vẫn ở khoảng ${demo.motion.outroEndDb.toFixed(1)} dBFS; trung bình 5 giây cuối ${demo.motion.outroTailDb.toFixed(1)} dBFS.`,
-      recommendation: "Kéo dài reverb tail và tạo fade-out tự nhiên về im lặng hoàn toàn. Kiểm tra lại sau khi bounce để không còn điểm cắt nghe thấy.",
+      evidence: `The final 100 ms remains at approximately ${demo.motion.outroEndDb.toFixed(1)} dBFS; the final five-second average is ${demo.motion.outroTailDb.toFixed(1)} dBFS.`,
+      recommendation: "Extend the reverb tail and create a natural fade to complete silence. Check the bounce again to ensure there is no audible cutoff.",
+      feedbackVi: { title: "Outro có nguy cơ bị cắt khi vẫn còn nghe rõ", recommendation: "Kéo dài reverb tail và tạo fade-out tự nhiên về im lặng hoàn toàn. Kiểm tra lại sau khi bounce để không còn điểm cắt nghe thấy." },
     });
   }
 
   if (demo.meta.codecWarning) {
     add({
-      title: "Giới hạn chất lượng codec của Demo",
-      section: "Chất lượng file",
-      impact: "Trung bình",
-      confidence: "Cao",
-      source: "Đo lường",
-      timestamp: "Toàn bài",
+      title: "Demo codec quality limits the analysis",
+      section: "File Quality",
+      impact: "Medium",
+      confidence: "High",
+      source: "Measurement",
+      timestamp: "Full Track",
       evidence: demo.meta.codecWarning,
-      recommendation: "Tải WAV hoặc FLAC từ bản xuất gốc trước khi quyết định vùng air, true peak và chất lượng reverb.",
+      recommendation: "Use a WAV or FLAC file from the original export before making decisions about the air band, true peak, or reverb quality.",
+      feedbackVi: { title: "Giới hạn chất lượng codec của Demo", recommendation: "Tải WAV hoặc FLAC từ bản xuất gốc trước khi quyết định vùng air, true peak và chất lượng reverb." },
     });
   }
   if (reference.meta.codecWarning) {
     addReference({
-      title: "Reference bị giới hạn bởi codec",
-      section: "Chất lượng file",
-      impact: "Trung bình",
-      confidence: "Cao",
-      source: "Đo lường",
-      timestamp: "Toàn bài",
+      title: "Reference analysis is limited by its codec",
+      section: "File Quality",
+      impact: "Medium",
+      confidence: "High",
+      source: "Measurement",
+      timestamp: "Full Track",
       evidence: reference.meta.codecWarning,
-      recommendation: "Không ép Demo tối hoặc sáng theo vùng high đã bị codec cắt. Nếu có thể, dùng Reference WAV/FLAC sạch.",
+      recommendation: "Do not make the Demo darker or brighter to match high frequencies removed by the codec. Use a clean WAV or FLAC Reference if possible.",
     });
   }
   if (reference.stereo.polarityRisk) {
     addReference({
-      title: "Reference có dấu hiệu lỗi polarity",
-      section: "Stereo & không gian",
-      impact: "Cao",
-      confidence: "Cao",
-      source: "Đo lường",
-      timestamp: "Toàn bài",
+      title: "The Reference shows signs of a polarity issue",
+      section: "Stereo & Spatial Image",
+      impact: "High",
+      confidence: "High",
+      source: "Measurement",
+      timestamp: "Full Track",
       evidence: `Reference correlation ${reference.stereo.correlation.toFixed(2)}, mono retention ${reference.stereo.monoRetentionDb.toFixed(1)} dB.`,
-      recommendation: "Không bắt chước độ rộng/phase này. Dùng file Reference đã sửa cực hoặc xuất lại file sạch.",
+      recommendation: "Do not replicate this width or phase behavior. Use a Reference with corrected polarity or a clean new export.",
     });
   }
   if (reference.loudness.integratedLufs > -14 || reference.loudness.truePeakDbtp > -0.3) {
     addReference({
-      title: "Reference master nóng; chỉ học màu sắc và không gian",
-      section: "Loudness & dynamics",
-      impact: "Trung bình",
-      confidence: "Cao",
-      source: "Đo lường",
-      timestamp: "Toàn bài",
+      title: "The Reference is mastered hot; compare tone and space only",
+      section: "Loudness & Dynamics",
+      impact: "Medium",
+      confidence: "High",
+      source: "Measurement",
+      timestamp: "Full Track",
       evidence: `Reference ${reference.loudness.integratedLufs.toFixed(1)} LUFS-I, ${reference.loudness.truePeakDbtp.toFixed(1)} dBTP.`,
-      recommendation: "Giữ headroom tốt của Demo nếu đang có; không tăng limiter chỉ để đạt độ to của Reference.",
+      recommendation: "Preserve the Demo's headroom when it is technically stronger. Do not increase limiting simply to match the Reference loudness.",
     });
   }
 
   const sectionOrder: Record<AnalysisSection, number> = {
-    "Stereo & không gian": 0,
-    "EQ & cân bằng phổ": 1,
-    "Melody & motif": 2,
-    "Arrangement & reverb": 3,
-    "Loudness & dynamics": 4,
-    "Chất lượng file": 5,
+    "Stereo & Spatial Image": 0,
+    "EQ & Tonal Balance": 1,
+    "Melody & Motif": 2,
+    "Arrangement & Reverb": 3,
+    "Loudness & Dynamics": 4,
+    "File Quality": 5,
   };
-  const impactOrder: Record<Impact, number> = { Cao: 0, "Trung bình": 1, Thấp: 2 };
+  const impactOrder: Record<Impact, number> = { High: 0, Medium: 1, Low: 2 };
   findings.sort((a, b) => impactOrder[a.impact] - impactOrder[b.impact] || sectionOrder[a.section] - sectionOrder[b.section]);
 
   const strengths: string[] = [];
-  if (!demo.stereo.polarityRisk && demo.stereo.correlation >= 0.2) strengths.push("Stereo không có dấu hiệu đảo cực nghiêm trọng và vẫn giữ được phần center.");
-  if (Math.abs(demo.stereo.balanceDb) <= 1) strengths.push("Cân bằng trái/phải ổn định trên toàn bài.");
-  if (demo.loudness.truePeakDbtp <= -1) strengths.push("True peak còn headroom phù hợp, chưa ép limiter quá sát 0 dBTP.");
-  if (demo.motion.suddenEvents.length <= 2) strengths.push("Ít thay đổi level đột ngột, phù hợp trải nghiệm Deep Sleep.");
-  if (!demo.motion.outroCutRisk) strengths.push("Outro đi về mức rất nhỏ, không có dấu hiệu cắt đuôi rõ ràng.");
-  if (!strengths.length) strengths.push("Demo có cấu trúc đủ rõ để tiếp tục tinh chỉnh theo Reference.");
+  const strengthsVi: string[] = [];
+  const addStrength = (english: string, vietnamese: string) => { strengths.push(english); strengthsVi.push(vietnamese); };
+  if (!demo.stereo.polarityRisk && demo.stereo.correlation >= 0.2) addStrength("Stereo shows no severe polarity reversal and retains a stable center.", "Stereo không có dấu hiệu đảo cực nghiêm trọng và vẫn giữ được phần center.");
+  if (Math.abs(demo.stereo.balanceDb) <= 1) addStrength("Left/right balance remains stable across the full track.", "Cân bằng trái/phải ổn định trên toàn bài.");
+  if (demo.loudness.truePeakDbtp <= -1) addStrength("True peak retains suitable headroom without pushing the limiter too close to 0 dBTP.", "True peak còn headroom phù hợp, chưa ép limiter quá sát 0 dBTP.");
+  if (demo.motion.suddenEvents.length <= 2) addStrength("Few sudden level changes support a calm Deep Sleep listening experience.", "Ít thay đổi level đột ngột, phù hợp trải nghiệm Deep Sleep.");
+  if (!demo.motion.outroCutRisk) addStrength("The outro reaches a very low level without an obvious tail cutoff.", "Outro đi về mức rất nhỏ, không có dấu hiệu cắt đuôi rõ ràng.");
+  if (!strengths.length) addStrength("The Demo has a clear enough structure for focused refinement against the Reference.", "Demo có cấu trúc đủ rõ để tiếp tục tinh chỉnh theo Reference.");
 
-  const highCount = findings.filter((finding) => finding.impact === "Cao").length;
-  const mediumCount = findings.filter((finding) => finding.impact === "Trung bình").length;
-  const qualityScore = clamp(Math.round(100 - highCount * 15 - mediumCount * 7 - findings.filter((finding) => finding.impact === "Thấp").length * 2), 28, 96);
+  const highCount = findings.filter((finding) => finding.impact === "High").length;
+  const mediumCount = findings.filter((finding) => finding.impact === "Medium").length;
+  const qualityScore = clamp(Math.round(100 - highCount * 15 - mediumCount * 7 - findings.filter((finding) => finding.impact === "Low").length * 2), 28, 96);
   const releaseVerdict = demo.stereo.polarityRisk || highCount >= 2
-    ? "Chưa sẵn sàng phát hành"
+    ? "Not Ready for Release"
     : highCount >= 1 || mediumCount >= 3
-      ? "Nên chỉnh trước khi phát hành"
-      : "Có thể phát hành sau khi kiểm tra tai nghe";
+      ? "Revisions Recommended Before Release"
+      : "Ready After Final Listening Check";
   const threeBiggestDifferences = findings.filter((finding) => !finding.positive).slice(0, 3).map((finding) => finding.title);
   const keepElements = strengths.slice(0, 3);
-  if (referenceWarnings.length) keepElements.push("Không sao chép các điểm kỹ thuật kém đã được cảnh báo ở Reference.");
+  if (referenceWarnings.length) keepElements.push("Do not replicate the technical issues flagged in the Reference.");
 
-  const good = strengths.slice(0, 3);
-  const priorityFindings = findings.filter((finding) => finding.impact !== "Thấp").slice(0, 4);
-  const priority = priorityFindings.map((finding) => `${finding.timestamp}: ${finding.title}. ${finding.recommendation}`);
-  const supplemental = findings.filter((finding) => !priorityFindings.includes(finding)).slice(0, 4).map((finding) => `${finding.timestamp}: ${finding.title}. ${finding.recommendation}`);
+  const good = strengthsVi.slice(0, 3);
+  const feedbackTimestampVi = (timestamp: string) => timestamp === "Full Track" ? "Toàn bài" : timestamp === "Across Multiple Sections" ? "Xuất hiện theo nhiều đoạn" : timestamp;
+  const feedbackLineVi = (finding: Finding) => {
+    const sourceVi = finding.source === "Measurement" ? "Đo lường" : "Suy luận";
+    return `${feedbackTimestampVi(finding.timestamp)} · ${sourceVi}: ${finding.feedbackVi?.title ?? finding.title}. ${finding.feedbackVi?.recommendation ?? finding.recommendation}`;
+  };
+  const priorityFindings = findings.filter((finding) => finding.impact !== "Low").slice(0, 4);
+  const priority = priorityFindings.map(feedbackLineVi);
+  const supplemental = findings.filter((finding) => !priorityFindings.includes(finding)).slice(0, 4).map(feedbackLineVi);
   const goal = "Mục tiêu của bản tiếp theo là giữ cảm xúc và bản sắc của Demo, đồng thời đạt độ cân bằng, chiều sâu, độ mềm và độ ổn định tương đương Reference, không sao chép những điểm kỹ thuật chưa tốt của Reference.";
   const fullText = [
     "Điểm đã làm tốt",
@@ -1085,13 +1134,13 @@ function buildPairAnalysis(demo: AudioMetrics, reference: AudioMetrics): PairAna
 }
 
 export async function analyzePair(demoFile: File, referenceFile: File, onProgress: ProgressCallback): Promise<PairAnalysis> {
-  onProgress(1, "Đang chuẩn bị engine đo lường");
+  onProgress(1, "Preparing the Measurement Engine");
   const demo = await analyzeSingle(demoFile, (fraction, label) => onProgress(3 + fraction * 45, `Demo: ${label}`));
   await waitForMainThread();
   const reference = await analyzeSingle(referenceFile, (fraction, label) => onProgress(50 + fraction * 45, `Reference: ${label}`));
-  onProgress(96, "Đang loudness-match và đối chiếu kết quả");
+  onProgress(96, "Applying Loudness Match and Comparing Results");
   await waitForMainThread();
   const result = buildPairAnalysis(demo, reference);
-  onProgress(100, "Đã hoàn tất báo cáo");
+  onProgress(100, "Analysis Complete");
   return result;
 }

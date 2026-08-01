@@ -1,4 +1,4 @@
-import { ChangeEvent, DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, useEffect, useRef, useState } from "react";
 import {
   analyzePair,
   BAND_DEFINITIONS,
@@ -9,7 +9,7 @@ import {
 
 type Slot = "demo" | "reference";
 type View = "new" | "report";
-type ReportTab = "overview" | "stereo" | "eq" | "dynamics" | "feedback";
+type ReportTab = "overview" | "stereo" | "eq" | "melody" | "arrangement" | "dynamics" | "priority" | "feedback";
 
 type SelectedAudio = {
   file: File;
@@ -27,9 +27,10 @@ const formatBytes = (bytes: number) => {
 };
 
 const formatDuration = (seconds?: number) => {
-  if (!seconds || !Number.isFinite(seconds)) return "Đang chờ giải mã";
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.round(seconds % 60).toString().padStart(2, "0");
+  if (seconds === undefined || !Number.isFinite(seconds)) return "Reading duration";
+  const roundedSeconds = Math.round(seconds);
+  const minutes = Math.floor(roundedSeconds / 60);
+  const rest = (roundedSeconds % 60).toString().padStart(2, "0");
   return `${minutes}:${rest}`;
 };
 
@@ -49,28 +50,29 @@ async function copyText(text: string) {
   textarea.select();
   const copied = document.execCommand("copy");
   textarea.remove();
-  if (!copied) throw new Error("Trình duyệt không cho phép sao chép tự động.");
+  if (!copied) throw new Error("The browser did not allow automatic copying.");
 }
 
 export default function Home() {
   const [demo, setDemo] = useState<SelectedAudio | null>(null);
   const [reference, setReference] = useState<SelectedAudio | null>(null);
   const [dragging, setDragging] = useState<Slot | null>(null);
+  const [previewing, setPreviewing] = useState<Slot | null>(null);
   const [errors, setErrors] = useState<Partial<Record<Slot, string>>>({});
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [view, setView] = useState<View>("new");
   const [analysis, setAnalysis] = useState<PairAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
-  const [progress, setProgress] = useState({ value: 0, label: "Đang chuẩn bị" });
+  const [progress, setProgress] = useState({ value: 0, label: "Preparing analysis" });
   const demoInput = useRef<HTMLInputElement>(null);
   const referenceInput = useRef<HTMLInputElement>(null);
 
   const validateFile = (file: File) => {
     const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
     if (!ACCEPTED_EXTENSIONS.includes(extension)) {
-      return "Định dạng chưa được hỗ trợ. Hãy dùng WAV, FLAC, MP3, M4A, AAC, OGG hoặc OPUS.";
+      return "Unsupported format. Use WAV, FLAC, MP3, M4A, AAC, OGG, or OPUS.";
     }
-    if (file.size > MAX_FILE_SIZE) return "File vượt quá giới hạn 500 MB.";
+    if (file.size > MAX_FILE_SIZE) return "The file exceeds the 500 MB limit.";
     return null;
   };
 
@@ -81,6 +83,7 @@ export default function Home() {
     const next = { file };
     if (slot === "demo") setDemo(next);
     else setReference(next);
+    setPreviewing(null);
     setAnalysis(null);
     setAnalysisError(null);
   };
@@ -91,7 +94,7 @@ export default function Home() {
     event.target.value = "";
   };
 
-  const onDrop = (slot: Slot, event: DragEvent<HTMLDivElement>) => {
+  const onDrop = (slot: Slot, event: DragEvent<HTMLElement>) => {
     event.preventDefault();
     setDragging(null);
     const file = event.dataTransfer.files?.[0];
@@ -101,6 +104,7 @@ export default function Home() {
   const removeFile = (slot: Slot) => {
     if (slot === "demo") setDemo(null);
     else setReference(null);
+    setPreviewing(null);
     setErrors((current) => ({ ...current, [slot]: undefined }));
     setAnalysis(null);
     setAnalysisError(null);
@@ -108,9 +112,10 @@ export default function Home() {
 
   const runAnalysis = async () => {
     if (!demo || !reference || analyzing) return;
+    setPreviewing(null);
     setAnalyzing(true);
     setAnalysisError(null);
-    setProgress({ value: 1, label: "Đang chuẩn bị engine đo lường" });
+    setProgress({ value: 1, label: "Preparing the measurement engine" });
     try {
       const result = await analyzePair(demo.file, reference.file, (value, label) => {
         setProgress({ value, label });
@@ -120,8 +125,8 @@ export default function Home() {
       setReference((current) => current ? ({ ...current, duration: result.reference.meta.duration, sampleRate: result.reference.meta.analysisSampleRate, channels: result.reference.meta.channels }) : current);
       setView("report");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Không thể phân tích file.";
-      setAnalysisError(`Không thể giải mã hoặc đo một trong hai file: ${message}. Hãy thử WAV/FLAC sạch và chạy lại.`);
+      const message = error instanceof Error ? error.message : "The file could not be analyzed.";
+      setAnalysisError(`One of the files could not be decoded or measured: ${message}. Try a clean WAV or FLAC export and run the analysis again.`);
     } finally {
       setAnalyzing(false);
     }
@@ -130,31 +135,9 @@ export default function Home() {
   const fileReady = Boolean(demo && reference);
 
   return (
-    <main className="app-shell">
-      <aside className="sidebar" aria-label="Điều hướng chính">
-        <div className="brand" aria-label="Zirect Lab">
-          <span className="brand-mark"><i /><b>ZL</b></span>
-          <span>Zirect Lab</span>
-        </div>
-        <nav className="side-nav">
-          <button className={`nav-item ${view === "new" ? "active" : ""}`} type="button" onClick={() => setView("new")}>
-            <span className="nav-wave" aria-hidden="true"><i /><i /><i /><i /><i /></span>
-            Phân tích mới
-          </button>
-          <button className={`nav-item ${view === "report" ? "active" : ""}`} type="button" disabled={!analysis} onClick={() => analysis && setView("report")}>
-            <span className="nav-doc" aria-hidden="true" />
-            Báo cáo
-          </button>
-        </nav>
-        <div className="system-ready"><span className="status-led" />Hệ thống sẵn sàng</div>
-      </aside>
-
+    <main className={`app-shell ${view === "report" ? "report-view" : "new-view"}`}>
+      <AppHeader view={view} hasReport={Boolean(analysis)} onNew={() => setView("new")} onReport={() => analysis && setView("report")} />
       <section className="workspace">
-        <header className="topbar">
-          <span>AUDIO ANALYZER / {view === "report" ? "BÁO CÁO" : "SESSION MỚI"}</span>
-          <span className="privacy">Xử lý trên thiết bị <i /> Không lưu file <b /></span>
-        </header>
-
         {view === "new" ? (
           <UploadWorkspace
             demo={demo}
@@ -162,13 +145,16 @@ export default function Home() {
             errors={errors}
             analysisError={analysisError}
             dragging={dragging}
+            previewing={previewing}
             fileReady={fileReady}
             hasReport={Boolean(analysis)}
+            analyzing={analyzing}
             demoInput={demoInput}
             referenceInput={referenceInput}
             onInput={onInput}
             onDrop={onDrop}
             onDrag={setDragging}
+            onPreview={setPreviewing}
             onRemove={removeFile}
             onAnalyze={runAnalysis}
             onOpenReport={() => setView("report")}
@@ -183,19 +169,39 @@ export default function Home() {
   );
 }
 
+function AppHeader({ view, hasReport, onNew, onReport }: { view: View; hasReport: boolean; onNew: () => void; onReport: () => void }) {
+  return (
+    <header className="site-header">
+      <div className="site-header-inner">
+        <button className="site-brand" type="button" onClick={onNew} aria-label="Open a new analysis">
+          <strong>ZIRECT</strong>
+          <span>AUDIO ANALYZER</span>
+        </button>
+        <nav className="header-nav" aria-label="Primary navigation">
+          <button className={view === "new" ? "active" : ""} type="button" onClick={onNew} aria-current={view === "new" ? "page" : undefined}>New Analysis</button>
+          <button className={view === "report" ? "active" : ""} type="button" disabled={!hasReport} onClick={onReport} aria-current={view === "report" ? "page" : undefined}>Analysis Report</button>
+        </nav>
+      </div>
+    </header>
+  );
+}
+
 type UploadWorkspaceProps = {
   demo: SelectedAudio | null;
   reference: SelectedAudio | null;
   errors: Partial<Record<Slot, string>>;
   analysisError: string | null;
   dragging: Slot | null;
+  previewing: Slot | null;
   fileReady: boolean;
   hasReport: boolean;
+  analyzing: boolean;
   demoInput: React.RefObject<HTMLInputElement | null>;
   referenceInput: React.RefObject<HTMLInputElement | null>;
   onInput: (slot: Slot, event: ChangeEvent<HTMLInputElement>) => void;
-  onDrop: (slot: Slot, event: DragEvent<HTMLDivElement>) => void;
+  onDrop: (slot: Slot, event: DragEvent<HTMLElement>) => void;
   onDrag: (slot: Slot | null) => void;
+  onPreview: (slot: Slot | null) => void;
   onRemove: (slot: Slot) => void;
   onAnalyze: () => void;
   onOpenReport: () => void;
@@ -205,22 +211,37 @@ function UploadWorkspace(props: UploadWorkspaceProps) {
   return (
     <>
       <div className="content upload-content">
-        <section className="hero-row">
-          <div>
-            <p className="eyebrow">DEEP SLEEP QUALITY CONTROL</p>
-            <h1>So sánh Demo với Reference</h1>
-            <p className="subtitle">Đo trực tiếp <i /> Loudness-matched <i /> Per-channel</p>
+        <section className="upload-hero">
+          <div className="upload-hero-copy">
+            <p className="eyebrow">ZIRECT LABEL · AUDIO QUALITY CONTROL</p>
+            <h1>Compare Your Demo Against a Reference</h1>
+            <p className="hero-description">Loudness-matched analysis of stereo image, phase, tonal balance, dynamics, and musical structure, designed for Deep Sleep, Ambient Sleep, and Calm Piano.</p>
+            <div className="privacy-badges" aria-label="Processing and privacy information">
+              <span><i />Browser-Based Processing</span>
+              <span><i />Audio Never Leaves Your Device</span>
+              <span><i />Automatic Loudness Matching</span>
+            </div>
           </div>
-          <div className={`file-status ${props.fileReady ? "has-files" : ""}`}><span className="status-led" />{props.fileReady ? "ĐỦ 2 FILE" : "CHƯA CÓ FILE"}</div>
         </section>
 
-        <section className="upload-grid" aria-label="Tải hai file audio">
-          <UploadCard slot="demo" title="BẢN DEMO" hint="Bản cần kiểm tra" audio={props.demo} error={props.errors.demo} active={props.dragging === "demo"} inputRef={props.demoInput} onInput={props.onInput} onDrop={props.onDrop} onDrag={props.onDrag} onRemove={props.onRemove} />
-          <UploadCard slot="reference" title="BẢN REFERENCE" hint="Mẫu chất lượng mục tiêu" audio={props.reference} error={props.errors.reference} active={props.dragging === "reference"} inputRef={props.referenceInput} onInput={props.onInput} onDrop={props.onDrop} onDrag={props.onDrag} onRemove={props.onRemove} />
+        <section className="upload-grid" aria-label="Upload Demo and Reference tracks">
+          <UploadCard slot="demo" title="Demo Track" audio={props.demo} error={props.errors.demo} active={props.dragging === "demo"} previewing={props.previewing} inputRef={props.demoInput} onInput={props.onInput} onDrop={props.onDrop} onDrag={props.onDrag} onPreview={props.onPreview} onRemove={props.onRemove} />
+          <UploadCard slot="reference" title="Reference Track" audio={props.reference} error={props.errors.reference} active={props.dragging === "reference"} previewing={props.previewing} inputRef={props.referenceInput} onInput={props.onInput} onDrop={props.onDrop} onDrag={props.onDrag} onPreview={props.onPreview} onRemove={props.onRemove} />
         </section>
+
+        <section className={`analysis-cta ${props.fileReady ? "ready" : ""}`} aria-label="Start audio analysis">
+          <div className="analysis-readiness"><span /><b>{props.fileReady ? "Both tracks are ready" : "Both tracks are required before analysis can begin."}</b></div>
+          <button className="start-analysis-button" type="button" onClick={props.onAnalyze} disabled={!props.fileReady || props.analyzing}>
+            <span>{props.analyzing ? "Analyzing" : "Start Analysis"}</span><i aria-hidden="true">→</i>
+          </button>
+          <p><span>i</span>Hz and dB values are starting points for critical listening.</p>
+        </section>
+
+        {props.analysisError ? <div className="analysis-error" role="alert"><b>Analysis could not be completed</b><span>{props.analysisError}</span></div> : null}
+        {props.hasReport ? <button className="resume-report" type="button" onClick={props.onOpenReport}>Open the latest analysis report <span>→</span></button> : null}
 
         <section className="scope-panel">
-          <div className="scope-title">PHẠM VI PHÂN TÍCH</div>
+          <div className="scope-title">ANALYSIS SCOPE</div>
           <div className="scope-grid">
             <ScopeItem icon="lufs" label="LUFS" />
             <ScopeItem icon="stereo" label="Stereo" />
@@ -229,16 +250,7 @@ function UploadWorkspace(props: UploadWorkspaceProps) {
             <ScopeItem icon="dynamics" label="Dynamics" />
           </div>
         </section>
-
-        {props.analysisError ? <div className="analysis-error" role="alert"><b>Không thể hoàn tất phân tích</b><span>{props.analysisError}</span></div> : null}
-        {props.hasReport ? <button className="resume-report" type="button" onClick={props.onOpenReport}>Mở lại báo cáo gần nhất <span>→</span></button> : null}
       </div>
-
-      <footer className="actionbar">
-        <div className="trial-note"><span>i</span>Kết quả Hz và dB là điểm bắt đầu để thử</div>
-        <div className="action-state">{props.fileReady ? "Sẵn sàng đo trực tiếp hai file" : "Cần đủ 2 file để tiếp tục"}</div>
-        <button className="analyze-button" type="button" onClick={props.onAnalyze} disabled={!props.fileReady}>Bắt đầu phân tích<span aria-hidden="true">→</span></button>
-      </footer>
     </>
   );
 }
@@ -246,41 +258,176 @@ function UploadWorkspace(props: UploadWorkspaceProps) {
 type UploadCardProps = {
   slot: Slot;
   title: string;
-  hint: string;
   audio: SelectedAudio | null;
   error?: string;
   active: boolean;
+  previewing: Slot | null;
   inputRef: React.RefObject<HTMLInputElement | null>;
   onInput: (slot: Slot, event: ChangeEvent<HTMLInputElement>) => void;
-  onDrop: (slot: Slot, event: DragEvent<HTMLDivElement>) => void;
+  onDrop: (slot: Slot, event: DragEvent<HTMLElement>) => void;
   onDrag: (slot: Slot | null) => void;
+  onPreview: (slot: Slot | null) => void;
   onRemove: (slot: Slot) => void;
 };
 
-function UploadCard({ slot, title, hint, audio, error, active, inputRef, onInput, onDrop, onDrag, onRemove }: UploadCardProps) {
+function UploadCard({ slot, title, audio, error, active, previewing, inputRef, onInput, onDrop, onDrag, onPreview, onRemove }: UploadCardProps) {
+  const cardRef = useRef<HTMLElement>(null);
+  const previewAudio = useRef<HTMLAudioElement>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewDuration, setPreviewDuration] = useState<number>();
+  const [previewPosition, setPreviewPosition] = useState(0);
+  const [fullscreenSupported, setFullscreenSupported] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+
+  useEffect(() => {
+    setPreviewDuration(undefined);
+    setPreviewPosition(0);
+    if (!audio) {
+      setPreviewUrl(null);
+      return;
+    }
+    const objectUrl = URL.createObjectURL(audio.file);
+    setPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [audio?.file]);
+
+  useEffect(() => {
+    setFullscreenSupported(Boolean(document.fullscreenEnabled && cardRef.current?.requestFullscreen));
+    const syncFullscreen = () => setFullscreen(document.fullscreenElement === cardRef.current);
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
+
+  useEffect(() => {
+    if (previewing !== slot) previewAudio.current?.pause();
+  }, [previewing, slot]);
+
+  const chooseFile = () => inputRef.current?.click();
+
+  const handleCardClick = (event: React.MouseEvent<HTMLElement>) => {
+    if ((event.target as HTMLElement).closest("button, input, audio")) return;
+    chooseFile();
+  };
+
+  const handleCardKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+    event.preventDefault();
+    chooseFile();
+  };
+
+  const togglePreview = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    const player = previewAudio.current;
+    if (!player) return;
+    if (previewing === slot && !player.paused) {
+      player.pause();
+      onPreview(null);
+      return;
+    }
+    try {
+      onPreview(slot);
+      await player.play();
+    } catch {
+      onPreview(null);
+    }
+  };
+
+  const replaceFile = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    previewAudio.current?.pause();
+    onPreview(null);
+    chooseFile();
+  };
+
+  const seekPreview = (event: ChangeEvent<HTMLInputElement>) => {
+    event.stopPropagation();
+    const nextPosition = Number(event.target.value);
+    setPreviewPosition(nextPosition);
+    if (previewAudio.current) previewAudio.current.currentTime = nextPosition;
+  };
+
+  const toggleFullscreen = async (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (!cardRef.current || !fullscreenSupported) return;
+    try {
+      if (document.fullscreenElement === cardRef.current) await document.exitFullscreen();
+      else await cardRef.current.requestFullscreen();
+    } catch {
+      setFullscreen(false);
+    }
+  };
+
+  const extension = audio?.file.name.split(".").pop()?.toUpperCase() || "AUDIO";
+  const duration = audio?.duration ?? previewDuration;
+  const isPlaying = previewing === slot;
+
   return (
-    <article className={`upload-card ${active ? "dragging" : ""} ${audio ? "selected" : ""}`}>
-      <span className="corner top-left" /><span className="corner top-right" /><span className="corner bottom-left" /><span className="corner bottom-right" />
-      <h2>{title}</h2>
-      <div className="drop-zone" onDragEnter={(event) => { event.preventDefault(); onDrag(slot); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) onDrag(null); }} onDrop={(event) => onDrop(slot, event)}>
-        <input ref={inputRef} type="file" accept="audio/*,.wav,.flac,.mp3,.m4a,.aac,.ogg,.opus" onChange={(event) => onInput(slot, event)} aria-label={`Chọn ${title.toLowerCase()}`} />
+    <article
+      ref={cardRef}
+      className={`upload-card ${slot} ${active ? "dragging" : ""} ${audio ? "selected" : "empty"}`}
+      tabIndex={0}
+      onClick={handleCardClick}
+      onKeyDown={handleCardKeyDown}
+      onDragEnter={(event) => { event.preventDefault(); onDrag(slot); }}
+      onDragOver={(event) => event.preventDefault()}
+      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) onDrag(null); }}
+      onDrop={(event) => onDrop(slot, event)}
+      aria-label={`${title}. ${audio ? `Selected file: ${audio.file.name}` : "No file selected"}`}
+    >
+      <input className="upload-input" ref={inputRef} type="file" accept="audio/*,.wav,.flac,.mp3,.m4a,.aac,.ogg,.opus" onChange={(event) => onInput(slot, event)} aria-label={`Choose a file for ${title}`} />
+      <header className="upload-card-header">
+        <div className="upload-card-heading"><span className="upload-status-dot" /><h2>{title}</h2></div>
+        {fullscreenSupported ? (
+          <button className="expand-card" type="button" onClick={toggleFullscreen} aria-label={fullscreen ? `Exit fullscreen for ${title}` : `Open ${title} in fullscreen`}>
+            <span className="expand-icon" aria-hidden="true"><i /><i /><i /><i /></span>
+          </button>
+        ) : null}
+      </header>
+
+      <div className="upload-card-body">
         {audio ? (
-          <div className="selected-file">
-            <div className="file-chip-icon"><span /><span /><span /></div>
-            <div className="file-copy"><strong title={audio.file.name}>{audio.file.name}</strong><span>{formatBytes(audio.file.size)} · {formatDuration(audio.duration)}{audio.sampleRate ? ` · ${audio.sampleRate / 1000} kHz · ${audio.channels === 1 ? "Mono" : "Stereo"}` : ""}</span></div>
-            <button type="button" onClick={() => onRemove(slot)} aria-label={`Xóa ${audio.file.name}`}>×</button>
+          <div className="selected-file-info">
+            <span className="file-format">{extension}</span>
+            <h3 title={audio.file.name}>{audio.file.name}</h3>
+            <div className="file-metadata">
+              <span>{extension}</span><i /><span>{formatBytes(audio.file.size)}</span><i /><span>{duration ? formatDuration(duration) : "Reading duration"}</span>
+              {audio.sampleRate ? <><i /><span>{audio.sampleRate / 1000} kHz · {audio.channels === 1 ? "Mono" : "Stereo"}</span></> : null}
+            </div>
+            <button className="replace-file" type="button" onClick={replaceFile}>Replace File</button>
           </div>
         ) : (
-          <>
-            <div className="audio-file-icon" aria-hidden="true"><i /><span><b /><b /><b /><b /></span></div>
-            <p>Kéo thả file âm thanh vào đây</p>
-            <button type="button" className="choose-file" onClick={() => inputRef.current?.click()}>hoặc chọn từ máy</button>
-            <small>WAV / FLAC / MP3 · Tối đa 500 MB</small>
-          </>
+          <div className="upload-empty-copy">
+            <span className="upload-glyph" aria-hidden="true"><i /></span>
+            <h3>{slot === "demo" ? "Upload Demo Track" : "Upload Reference Track"}</h3>
+            <p>Drop a WAV, MP3, or FLAC file here</p>
+            <span className="upload-browse">or click to browse</span>
+            <small className="upload-quality-note">Higher-quality source files provide more reliable measurements.</small>
+          </div>
         )}
         {error ? <div className="file-error" role="alert">{error}</div> : null}
-        <div className="drop-hint">{hint}</div>
       </div>
+
+      {audio ? (
+        <footer className="upload-card-footer">
+          <button className={`upload-play ${isPlaying ? "playing" : ""}`} type="button" onClick={togglePreview} disabled={!previewUrl} aria-label={isPlaying ? `Pause ${audio.file.name}` : `Preview ${audio.file.name}`}>
+            <span aria-hidden="true">{isPlaying ? <><i /><i /></> : <b />}</span>
+          </button>
+          <div className="upload-preview-track">
+            <div className="upload-file-state"><span className="upload-status-dot" /><b>{isPlaying ? "Previewing" : "Ready for analysis"}</b><em>{formatDuration(previewPosition)} / {duration ? formatDuration(duration) : "--:--"}</em></div>
+            <input aria-label={`Preview position for ${audio.file.name}`} type="range" min="0" max={duration || 1} step="0.1" value={Math.min(previewPosition, duration || 1)} onChange={seekPreview} onClick={(event) => event.stopPropagation()} />
+          </div>
+          <button className="remove-upload" type="button" onClick={(event) => { event.stopPropagation(); onRemove(slot); }} aria-label={`Remove ${audio.file.name}`}>Remove File</button>
+          <audio
+            ref={previewAudio}
+            src={previewUrl ?? undefined}
+            preload="metadata"
+            onLoadedMetadata={(event) => Number.isFinite(event.currentTarget.duration) && setPreviewDuration(event.currentTarget.duration)}
+            onTimeUpdate={(event) => setPreviewPosition(event.currentTarget.currentTime)}
+            onPause={() => previewing === slot && onPreview(null)}
+            onEnded={() => { setPreviewPosition(0); onPreview(null); }}
+          />
+        </footer>
+      ) : null}
     </article>
   );
 }
@@ -291,26 +438,28 @@ function ScopeItem({ icon, label }: { icon: string; label: string }) {
 
 function AnalysisProgress({ progress, label }: { progress: number; label: string }) {
   const stages = [
-    { at: 3, label: "Kiểm tra file" },
-    { at: 10, label: "LUFS & loudness" },
-    { at: 35, label: "Stereo & phase" },
-    { at: 60, label: "Phổ L/R" },
-    { at: 88, label: "Dynamics & timeline" },
-    { at: 99, label: "Viết báo cáo" },
+    { at: 3, label: "Decoding Audio" },
+    { at: 12, label: "Measuring Loudness" },
+    { at: 48, label: "Analyzing Stereo and Phase" },
+    { at: 61, label: "Comparing Frequency Balance" },
+    { at: 88, label: "Measuring Dynamics" },
+    { at: 96, label: "Applying Loudness Match" },
+    { at: 98, label: "Generating Findings" },
+    { at: 100, label: "Analysis Complete" },
   ];
   return (
-    <div className="analysis-overlay" role="dialog" aria-modal="true" aria-label="Đang phân tích audio">
+    <div className="analysis-overlay" role="dialog" aria-modal="true" aria-label="Audio analysis in progress">
       <div className="analysis-modal">
         <div className="scanner-mark"><span /><span /><span /><span /><span /></div>
         <p className="eyebrow">DSP ANALYSIS RUNNING</p>
-        <h2>Đang đo trực tiếp hai file</h2>
+        <h2>Analyzing Both Tracks</h2>
         <p className="progress-label">{label}</p>
         <div className="progress-track"><i style={{ width: `${Math.max(2, progress)}%` }} /></div>
         <div className="progress-value">{Math.round(progress)}%</div>
         <div className="progress-stages">
           {stages.map((stage) => <div key={stage.label} className={progress >= stage.at ? "done" : ""}><span />{stage.label}</div>)}
         </div>
-        <small>File được xử lý trong trình duyệt và không được tải lên kho lưu trữ.</small>
+        <small>Audio is processed in your browser and is never uploaded to a server.</small>
       </div>
     </div>
   );
@@ -331,32 +480,42 @@ function ReportWorkspace({ analysis, demoFile, referenceFile, onNew }: { analysi
   };
 
   const tabs: Array<{ key: ReportTab; label: string }> = [
-    { key: "overview", label: "Tổng quan" },
-    { key: "stereo", label: "Stereo & Phase" },
-    { key: "eq", label: "EQ & Phổ tần" },
-    { key: "dynamics", label: "Dynamics" },
-    { key: "feedback", label: "Feedback producer" },
+    { key: "overview", label: "Overview" },
+    { key: "stereo", label: "Stereo & Spatial Image" },
+    { key: "eq", label: "EQ & Tonal Balance" },
+    { key: "melody", label: "Melody & Motif" },
+    { key: "arrangement", label: "Arrangement & Reverb" },
+    { key: "dynamics", label: "Loudness & Dynamics" },
+    { key: "priority", label: "Priority Ranking" },
+    { key: "feedback", label: "Producer Feedback" },
   ];
 
   return (
     <>
       <div className="content report-content">
         <section className="report-hero">
-          <div>
+          <div className="report-hero-copy">
             <p className="eyebrow">ANALYSIS COMPLETE / LOUDNESS-MATCHED</p>
-            <h1>Báo cáo Demo vs Reference</h1>
+            <h1>Demo vs Reference Analysis</h1>
             <p className="report-subtitle">{analysis.demo.meta.name} <i /> {analysis.reference.meta.name}</p>
           </div>
-          <div className={`verdict ${analysis.releaseVerdict.startsWith("Chưa") ? "danger" : analysis.releaseVerdict.startsWith("Nên") ? "warning" : "pass"}`}>
-            <ScoreRing score={analysis.qualityScore} />
-            <div><span>ĐÁNH GIÁ PHÁT HÀNH</span><strong>{analysis.releaseVerdict}</strong></div>
+          <div className="report-hero-side">
+            <div className={`verdict ${analysis.releaseVerdict.startsWith("Not") ? "danger" : analysis.releaseVerdict.startsWith("Revisions") ? "warning" : "pass"}`}>
+              <ScoreRing score={analysis.qualityScore} />
+              <div><span>RELEASE ASSESSMENT</span><strong>{analysis.releaseVerdict}</strong></div>
+            </div>
+            <div className="report-hero-actions">
+              <button type="button" className="report-secondary-action" onClick={onNew}>Replace Files / New Analysis</button>
+              <button type="button" className="report-primary-action" onClick={tab === "feedback" ? copyFeedback : () => setTab("feedback")}>
+                {tab === "feedback" ? (copied ? "Copied" : "Copy Feedback") : "Open Producer Feedback"}
+              </button>
+            </div>
           </div>
         </section>
 
         <LoudnessMatch analysis={analysis} />
-        <ABPlayer analysis={analysis} demoFile={demoFile} referenceFile={referenceFile} />
 
-        <nav className="report-tabs" aria-label="Các phần báo cáo">
+        <nav className="report-tabs" aria-label="Analysis report sections">
           {tabs.map((item) => <button key={item.key} type="button" className={tab === item.key ? "active" : ""} onClick={() => setTab(item.key)}>{item.label}</button>)}
         </nav>
 
@@ -364,18 +523,16 @@ function ReportWorkspace({ analysis, demoFile, referenceFile, onNew }: { analysi
           {tab === "overview" ? <OverviewTab analysis={analysis} /> : null}
           {tab === "stereo" ? <StereoTab analysis={analysis} /> : null}
           {tab === "eq" ? <EqTab analysis={analysis} /> : null}
+          {tab === "melody" ? <MelodyTab analysis={analysis} /> : null}
+          {tab === "arrangement" ? <ArrangementTab analysis={analysis} /> : null}
           {tab === "dynamics" ? <DynamicsTab analysis={analysis} /> : null}
+          {tab === "priority" ? <PriorityTab analysis={analysis} /> : null}
           {tab === "feedback" ? <FeedbackTab analysis={analysis} copied={copied} onCopy={copyFeedback} /> : null}
         </div>
+        <div className="report-evidence-note"><span>i</span>Measurements and inferences are labeled separately in every finding.</div>
       </div>
 
-      <footer className="actionbar report-actionbar">
-        <div className="trial-note"><span>i</span>Đo lường và suy luận được ghi nhãn riêng</div>
-        <button type="button" className="secondary-action" onClick={onNew}>Thay file / phân tích mới</button>
-        <button type="button" className="analyze-button" onClick={tab === "feedback" ? copyFeedback : () => setTab("feedback")}>
-          {tab === "feedback" ? (copied ? "Đã sao chép feedback" : "Sao chép feedback") : "Mở feedback producer"}<span>→</span>
-        </button>
-      </footer>
+      <ABPlayer analysis={analysis} demoFile={demoFile} referenceFile={referenceFile} />
     </>
   );
 }
@@ -388,12 +545,12 @@ function LoudnessMatch({ analysis }: { analysis: PairAnalysis }) {
   const match = analysis.loudnessMatch;
   return (
     <section className="loudness-match-panel">
-      <div className="match-title"><span className="status-led" /><div><b>LOUDNESS-MATCH ĐÃ ÁP DỤNG TRƯỚC KHI SO SÁNH</b><small>Hai bản được hạ về cùng {match.targetLufs.toFixed(1)} LUFS-I để đối chiếu phổ và không gian</small></div></div>
+      <div className="match-title"><span className="status-led" /><div><b>LOUDNESS MATCH APPLIED BEFORE COMPARISON</b><small>Both tracks are attenuated to {match.targetLufs.toFixed(1)} LUFS-I before tonal and spatial comparison</small></div></div>
       <div className="match-metrics">
-        <Metric compact label="Demo gốc" value={`${analysis.demo.loudness.integratedLufs.toFixed(1)} LUFS`} note={`Gain ${signed(match.demoGainDb, " dB")}`} />
+        <Metric compact label="Original Demo" value={`${analysis.demo.loudness.integratedLufs.toFixed(1)} LUFS`} note={`Gain ${signed(match.demoGainDb, " dB")}`} />
         <span className="match-arrow">⇄</span>
-        <Metric compact label="Reference gốc" value={`${analysis.reference.loudness.integratedLufs.toFixed(1)} LUFS`} note={`Gain ${signed(match.referenceGainDb, " dB")}`} />
-        <Metric compact label="Chênh lệch ban đầu" value={`${Math.abs(match.originalDeltaDb).toFixed(1)} dB`} note={match.originalDeltaDb > 0 ? "Demo lớn hơn" : match.originalDeltaDb < 0 ? "Reference lớn hơn" : "Bằng nhau"} />
+        <Metric compact label="Original Reference" value={`${analysis.reference.loudness.integratedLufs.toFixed(1)} LUFS`} note={`Gain ${signed(match.referenceGainDb, " dB")}`} />
+        <Metric compact label="Original Difference" value={`${Math.abs(match.originalDeltaDb).toFixed(1)} dB`} note={match.originalDeltaDb > 0 ? "Demo is louder" : match.originalDeltaDb < 0 ? "Reference is louder" : "Equal loudness"} />
       </div>
     </section>
   );
@@ -402,29 +559,74 @@ function LoudnessMatch({ analysis }: { analysis: PairAnalysis }) {
 function ABPlayer({ analysis, demoFile, referenceFile }: { analysis: PairAnalysis; demoFile: File; referenceFile: File }) {
   const demoAudio = useRef<HTMLAudioElement>(null);
   const referenceAudio = useRef<HTMLAudioElement>(null);
-  const urls = useMemo(() => ({ demo: URL.createObjectURL(demoFile), reference: URL.createObjectURL(referenceFile) }), [demoFile, referenceFile]);
-  const [active, setActive] = useState<Slot | null>(null);
+  const [urls, setUrls] = useState<{ demo: string; reference: string } | null>(null);
+  const [selected, setSelected] = useState<Slot>("demo");
+  const [playing, setPlaying] = useState(false);
   const [position, setPosition] = useState(0);
   const duration = Math.min(analysis.demo.meta.duration, analysis.reference.meta.duration);
 
   useEffect(() => {
-    return () => { URL.revokeObjectURL(urls.demo); URL.revokeObjectURL(urls.reference); };
-  }, [urls]);
+    const nextUrls = { demo: URL.createObjectURL(demoFile), reference: URL.createObjectURL(referenceFile) };
+    setUrls(nextUrls);
+    setSelected("demo");
+    setPlaying(false);
+    setPosition(0);
+    return () => {
+      demoAudio.current?.pause();
+      referenceAudio.current?.pause();
+      URL.revokeObjectURL(nextUrls.demo);
+      URL.revokeObjectURL(nextUrls.reference);
+    };
+  }, [demoFile, referenceFile]);
 
   useEffect(() => {
     if (demoAudio.current) demoAudio.current.volume = Math.min(1, 10 ** (analysis.loudnessMatch.demoGainDb / 20));
     if (referenceAudio.current) referenceAudio.current.volume = Math.min(1, 10 ** (analysis.loudnessMatch.referenceGainDb / 20));
   }, [analysis]);
 
-  const toggle = async (slot: Slot) => {
-    const target = slot === "demo" ? demoAudio.current : referenceAudio.current;
-    const other = slot === "demo" ? referenceAudio.current : demoAudio.current;
+  const getPlayer = (slot: Slot) => slot === "demo" ? demoAudio.current : referenceAudio.current;
+
+  const syncPlayerPosition = (player: HTMLAudioElement, value: number) => {
+    const playerDuration = Number.isFinite(player.duration) ? player.duration : duration;
+    player.currentTime = Math.min(value, Math.max(0, playerDuration - 0.1));
+  };
+
+  const togglePlayback = async () => {
+    const target = getPlayer(selected);
     if (!target) return;
-    other?.pause();
-    if (active === slot && !target.paused) { target.pause(); setActive(null); return; }
-    target.currentTime = Math.min(position, Math.max(0, target.duration - 0.1));
-    await target.play();
-    setActive(slot);
+    if (playing && !target.paused) {
+      target.pause();
+      setPlaying(false);
+      return;
+    }
+    try {
+      syncPlayerPosition(target, position);
+      await target.play();
+      setPlaying(true);
+    } catch {
+      setPlaying(false);
+    }
+  };
+
+  const selectSource = async (slot: Slot) => {
+    if (slot === selected) return;
+    const current = getPlayer(selected);
+    const target = getPlayer(slot);
+    const resumeAfterSwitch = playing;
+    current?.pause();
+    setSelected(slot);
+    if (!target) {
+      setPlaying(false);
+      return;
+    }
+    syncPlayerPosition(target, position);
+    if (!resumeAfterSwitch) return;
+    try {
+      await target.play();
+      setPlaying(true);
+    } catch {
+      setPlaying(false);
+    }
   };
 
   const seek = (value: number) => {
@@ -434,13 +636,23 @@ function ABPlayer({ analysis, demoFile, referenceFile }: { analysis: PairAnalysi
   };
 
   return (
-    <section className="ab-player">
-      <div className="ab-label"><span>A/B PLAYER</span><small>Playback đã bù gain theo loudness-match</small></div>
-      <button type="button" className={active === "demo" ? "active" : ""} onClick={() => toggle("demo")}><i />{active === "demo" ? "Dừng Demo" : "Nghe Demo"}<small>{signed(analysis.loudnessMatch.demoGainDb, " dB")}</small></button>
-      <button type="button" className={active === "reference" ? "active" : ""} onClick={() => toggle("reference")}><i />{active === "reference" ? "Dừng Reference" : "Nghe Reference"}<small>{signed(analysis.loudnessMatch.referenceGainDb, " dB")}</small></button>
-      <div className="ab-timeline"><input aria-label="Vị trí phát A/B" type="range" min="0" max={duration || 1} step="0.1" value={Math.min(position, duration || 1)} onChange={(event) => seek(Number(event.target.value))} /><span>{formatTimestamp(position)} / {formatTimestamp(duration)}</span></div>
-      <audio ref={demoAudio} src={urls.demo} onTimeUpdate={(event) => active === "demo" && setPosition(event.currentTarget.currentTime)} onEnded={() => setActive(null)} />
-      <audio ref={referenceAudio} src={urls.reference} onTimeUpdate={(event) => active === "reference" && setPosition(event.currentTarget.currentTime)} onEnded={() => setActive(null)} />
+    <section className="ab-player-dock" aria-label="Demo and Reference comparison player">
+      <div className="ab-player-inner">
+        <div className="ab-dock-label"><span>A/B</span><div><b>LOUDNESS-MATCHED</b><small>{analysis.loudnessMatch.targetLufs.toFixed(1)} LUFS-I · local playback</small></div></div>
+        <button className={`ab-master-play ${playing ? "playing" : ""}`} type="button" onClick={togglePlayback} aria-label={playing ? "Pause the A/B player" : "Play the A/B player"}>
+          <span aria-hidden="true">{playing ? <><i /><i /></> : <b />}</span>
+        </button>
+        <div className="ab-source-toggle" aria-label="Select the playback source">
+          <button type="button" className={`demo ${selected === "demo" ? "active" : ""}`} onClick={() => selectSource("demo")}><span>Demo</span><small>{signed(analysis.loudnessMatch.demoGainDb, " dB")}</small></button>
+          <button type="button" className={`reference ${selected === "reference" ? "active" : ""}`} onClick={() => selectSource("reference")}><span>Reference</span><small>{signed(analysis.loudnessMatch.referenceGainDb, " dB")}</small></button>
+        </div>
+        <div className="ab-dock-timeline">
+          <input aria-label="A/B playback position" type="range" min="0" max={duration || 1} step="0.1" value={Math.min(position, duration || 1)} onChange={(event) => seek(Number(event.target.value))} />
+          <div><span>{selected === "demo" ? "DEMO TRACK" : "REFERENCE TRACK"}</span><time>{formatTimestamp(position)} / {formatTimestamp(duration)}</time></div>
+        </div>
+        <audio ref={demoAudio} src={urls?.demo} preload="metadata" onTimeUpdate={(event) => selected === "demo" && setPosition(event.currentTarget.currentTime)} onEnded={() => { setPlaying(false); setPosition(0); }} />
+        <audio ref={referenceAudio} src={urls?.reference} preload="metadata" onTimeUpdate={(event) => selected === "reference" && setPosition(event.currentTarget.currentTime)} onEnded={() => { setPlaying(false); setPosition(0); }} />
+      </div>
     </section>
   );
 }
@@ -448,29 +660,54 @@ function ABPlayer({ analysis, demoFile, referenceFile }: { analysis: PairAnalysi
 function OverviewTab({ analysis }: { analysis: PairAnalysis }) {
   return (
     <div className="report-stack">
+      <ReportMetricOverview analysis={analysis} />
       <section className="summary-grid">
-        <article className="report-panel strengths-panel"><PanelHeading index="01" title="Điểm mạnh của Demo" subtitle="Các phần nên giữ nguyên" />
+        <article className="report-panel strengths-panel"><PanelHeading index="01" title="Demo Strengths" subtitle="Elements worth preserving" />
           <ul className="strength-list">{analysis.strengths.map((item) => <li key={item}><span>✓</span>{item}</li>)}</ul>
         </article>
-        <article className="report-panel differences-panel"><PanelHeading index="02" title="Ba khác biệt lớn nhất" subtitle="Theo thứ tự ưu tiên" />
+        <article className="report-panel differences-panel"><PanelHeading index="02" title="Three Largest Differences" subtitle="Ordered by priority" />
           <ol className="difference-list">{analysis.threeBiggestDifferences.map((item, index) => <li key={item}><span>0{index + 1}</span>{item}</li>)}</ol>
         </article>
       </section>
 
-      <section className="report-panel"><PanelHeading index="03" title="Xếp hạng vấn đề" subtitle={`${analysis.findings.length} kết luận có bằng chứng`} />
+      <section className="report-panel"><PanelHeading index="03" title="Highest-Priority Findings" subtitle={`${analysis.findings.length} evidence-based findings`} />
         <div className="finding-list">{analysis.findings.slice(0, 7).map((finding, index) => <FindingCard key={finding.id} finding={finding} rank={index + 1} />)}</div>
       </section>
 
-      {analysis.referenceWarnings.length ? <section className="report-panel reference-warning"><PanelHeading index="REF" title="Điểm không nên bắt chước ở Reference" subtitle="Giữ phần kỹ thuật tốt hơn của Demo" />
+      {analysis.referenceWarnings.length ? <section className="report-panel reference-warning"><PanelHeading index="REF" title="Reference Issues Not to Replicate" subtitle="Preserve technically stronger elements in the Demo" />
         <div className="finding-list">{analysis.referenceWarnings.map((finding) => <FindingCard key={finding.id} finding={finding} />)}</div>
       </section> : null}
     </div>
   );
 }
 
+function ReportMetricOverview({ analysis }: { analysis: PairAnalysis }) {
+  const metrics = [
+    { label: "Integrated LUFS", value: analysis.demo.loudness.integratedLufs.toFixed(1), unit: "LUFS", reference: `${analysis.reference.loudness.integratedLufs.toFixed(1)} LUFS`, tone: "demo" },
+    { label: "Loudness Difference", value: Math.abs(analysis.loudnessMatch.originalDeltaDb).toFixed(1), unit: "dB", reference: analysis.loudnessMatch.originalDeltaDb > 0 ? "Demo louder" : analysis.loudnessMatch.originalDeltaDb < 0 ? "Reference louder" : "Equal", tone: "neutral" },
+    { label: "True Peak", value: analysis.demo.loudness.truePeakDbtp.toFixed(1), unit: "dBTP", reference: `${analysis.reference.loudness.truePeakDbtp.toFixed(1)} dBTP`, tone: analysis.demo.loudness.truePeakDbtp > -1 ? "warning" : "demo" },
+    { label: "LRA", value: analysis.demo.loudness.lraLu.toFixed(1), unit: "LU", reference: `${analysis.reference.loudness.lraLu.toFixed(1)} LU`, tone: "neutral" },
+    { label: "Crest Factor", value: analysis.demo.loudness.crestFactorDb.toFixed(1), unit: "dB", reference: `${analysis.reference.loudness.crestFactorDb.toFixed(1)} dB`, tone: "neutral" },
+    { label: "Phase Correlation", value: analysis.demo.stereo.correlation.toFixed(2), unit: "", reference: analysis.reference.stereo.correlation.toFixed(2), tone: analysis.demo.stereo.correlation < 0.1 ? "warning" : "demo" },
+    { label: "Mono Compatibility", value: analysis.demo.stereo.monoRetentionDb.toFixed(1), unit: "dB", reference: `${analysis.reference.stereo.monoRetentionDb.toFixed(1)} dB`, tone: analysis.demo.stereo.monoRetentionDb < -4 ? "warning" : "demo" },
+    { label: "Stereo Width", value: analysis.demo.stereo.widthPercent.toFixed(0), unit: "%", reference: `${analysis.reference.stereo.widthPercent.toFixed(0)}%`, tone: "demo" },
+  ];
+  return (
+    <section className="report-metric-overview" aria-label="Demo overview metrics compared with the Reference">
+      {metrics.map((metric) => (
+        <article className={`report-metric-card ${metric.tone}`} key={metric.label}>
+          <span>{metric.label}</span>
+          <strong>{metric.value}<small>{metric.unit}</small></strong>
+          <p>Reference <b>{metric.reference}</b></p>
+        </article>
+      ))}
+    </section>
+  );
+}
+
 function StereoTab({ analysis }: { analysis: PairAnalysis }) {
   const rows = [
-    { label: "Tổng thể", range: "Full range", demo: analysis.demo.stereo, reference: analysis.reference.stereo },
+    { label: "Overall", range: "Full range", demo: analysis.demo.stereo, reference: analysis.reference.stereo },
     ...BAND_DEFINITIONS.map((definition) => ({ label: definition.label, range: definition.range, demo: analysis.demo.spectral.bands[definition.key], reference: analysis.reference.spectral.bands[definition.key] })),
   ];
   return (
@@ -479,14 +716,14 @@ function StereoTab({ analysis }: { analysis: PairAnalysis }) {
         <Metric label="Demo width" value={`${analysis.demo.stereo.widthPercent.toFixed(0)}%`} note={`Reference ${analysis.reference.stereo.widthPercent.toFixed(0)}%`} />
         <Metric label="Correlation" value={analysis.demo.stereo.correlation.toFixed(2)} note={`Reference ${analysis.reference.stereo.correlation.toFixed(2)}`} tone={analysis.demo.stereo.correlation < 0.1 ? "bad" : "good"} />
         <Metric label="Mono retention" value={`${analysis.demo.stereo.monoRetentionDb.toFixed(1)} dB`} note={`Reference ${analysis.reference.stereo.monoRetentionDb.toFixed(1)} dB`} tone={analysis.demo.stereo.monoRetentionDb < -4 ? "bad" : "good"} />
-        <Metric label="L/R balance" value={`${signed(analysis.demo.stereo.balanceDb, " dB")}`} note={analysis.demo.stereo.balanceDb > 0 ? "Nghiêng trái" : analysis.demo.stereo.balanceDb < 0 ? "Nghiêng phải" : "Cân bằng"} />
+        <Metric label="L/R balance" value={`${signed(analysis.demo.stereo.balanceDb, " dB")}`} note={analysis.demo.stereo.balanceDb > 0 ? "Leans left" : analysis.demo.stereo.balanceDb < 0 ? "Leans right" : "Balanced"} />
       </section>
-      <section className="report-panel"><PanelHeading index="01" title="Stereo theo dải" subtitle="Đo riêng từng vùng tần số sau giải mã" />
-        <div className="data-table stereo-table"><div className="table-row table-head"><span>Dải</span><span>Demo width</span><span>Ref width</span><span>Demo corr.</span><span>Ref corr.</span></div>
+      <section className="report-panel"><PanelHeading index="01" title="Stereo Image by Frequency Band" subtitle="Per-band measurements after decoding" />
+        <div className="data-table stereo-table"><div className="table-row table-head"><span>Band</span><span>Demo width</span><span>Ref width</span><span>Demo corr.</span><span>Ref corr.</span></div>
           {rows.map((row) => <div className="table-row" key={row.label}><span><b>{row.label}</b><small>{row.range}</small></span><span>{row.demo.widthPercent.toFixed(0)}%</span><span>{row.reference.widthPercent.toFixed(0)}%</span><span className={row.demo.correlation < 0 ? "negative" : ""}>{row.demo.correlation.toFixed(2)}</span><span className={row.reference.correlation < 0 ? "negative" : ""}>{row.reference.correlation.toFixed(2)}</span></div>)}
         </div>
       </section>
-      <section className="report-panel"><PanelHeading index="02" title="Kết luận Stereo & không gian" subtitle="Phân tích đầu tiên theo yêu cầu" /><RelevantFindings analysis={analysis} sections={["Stereo & không gian"]} /></section>
+      <section className="report-panel"><PanelHeading index="02" title="Stereo & Spatial Findings" subtitle="Phase, width, balance, and mono compatibility" /><RelevantFindings analysis={analysis} sections={["Stereo & Spatial Image"]} /></section>
     </div>
   );
 }
@@ -494,9 +731,27 @@ function StereoTab({ analysis }: { analysis: PairAnalysis }) {
 function EqTab({ analysis }: { analysis: PairAnalysis }) {
   return (
     <div className="report-stack">
-      <section className="report-panel spectrum-panel"><PanelHeading index="01" title="Phổ trung bình per-channel" subtitle="L/R riêng biệt, đã loudness-match" /><SpectrumChart analysis={analysis} /></section>
-      <section className="report-panel"><PanelHeading index="02" title="Chênh lệch theo dải" subtitle="Giá trị dương: Demo nhiều hơn Reference" /><BandDeltaChart analysis={analysis} /></section>
-      <section className="report-panel"><PanelHeading index="03" title="Kết luận EQ" subtitle="Track/bus/master và khoảng dB để thử" /><RelevantFindings analysis={analysis} sections={["EQ & cân bằng phổ", "Chất lượng file"]} /></section>
+      <section className="report-panel spectrum-panel"><PanelHeading index="01" title="Average Per-Channel Spectrum" subtitle="Separate L/R curves after loudness matching" /><SpectrumChart analysis={analysis} /></section>
+      <section className="report-panel"><PanelHeading index="02" title="Frequency-Band Differences" subtitle="Positive values mean more energy in the Demo" /><BandDeltaChart analysis={analysis} /></section>
+      <section className="report-panel"><PanelHeading index="03" title="EQ & Tonal Balance Findings" subtitle="Suggested source, bus, or master adjustments" /><RelevantFindings analysis={analysis} sections={["EQ & Tonal Balance", "File Quality"]} /></section>
+    </div>
+  );
+}
+
+function MelodyTab({ analysis }: { analysis: PairAnalysis }) {
+  return (
+    <div className="report-stack">
+      <section className="report-panel"><PanelHeading index="01" title="Melody & Motif" subtitle="Foreground movement, note density, and perceived prominence" /><RelevantFindings analysis={analysis} sections={["Melody & Motif"]} /></section>
+      <section className="report-panel context-panel"><PanelHeading index="NOTE" title="Interpretation Context" subtitle="Stereo mix measurements cannot identify individual instruments with certainty" /><p>Onset density and midrange prominence are measured directly. Instrument, motif, and performance references are labeled as inferences and should be confirmed by listening at the detected timestamps.</p></section>
+    </div>
+  );
+}
+
+function ArrangementTab({ analysis }: { analysis: PairAnalysis }) {
+  return (
+    <div className="report-stack">
+      <section className="report-panel"><PanelHeading index="01" title="Arrangement & Reverb" subtitle="Layer density, spectral buildup, and spatial tails" /><RelevantFindings analysis={analysis} sections={["Arrangement & Reverb"]} /></section>
+      <section className="report-panel context-panel"><PanelHeading index="NOTE" title="Mix Context" subtitle="Recommendations prioritize track or bus changes before master processing" /><p>Reverb and arrangement conclusions combine measured tonal, spatial, and motion evidence. Confirm the likely source in the session before applying an adjustment.</p></section>
     </div>
   );
 }
@@ -504,24 +759,57 @@ function EqTab({ analysis }: { analysis: PairAnalysis }) {
 function DynamicsTab({ analysis }: { analysis: PairAnalysis }) {
   const metrics = [
     ["Integrated loudness", `${analysis.demo.loudness.integratedLufs.toFixed(1)} LUFS`, `${analysis.reference.loudness.integratedLufs.toFixed(1)} LUFS`],
-    ["True peak ước tính 4×", `${analysis.demo.loudness.truePeakDbtp.toFixed(1)} dBTP`, `${analysis.reference.loudness.truePeakDbtp.toFixed(1)} dBTP`],
+    ["Estimated 4× true peak", `${analysis.demo.loudness.truePeakDbtp.toFixed(1)} dBTP`, `${analysis.reference.loudness.truePeakDbtp.toFixed(1)} dBTP`],
     ["Loudness range", `${analysis.demo.loudness.lraLu.toFixed(1)} LU`, `${analysis.reference.loudness.lraLu.toFixed(1)} LU`],
     ["Crest factor", `${analysis.demo.loudness.crestFactorDb.toFixed(1)} dB`, `${analysis.reference.loudness.crestFactorDb.toFixed(1)} dB`],
     ["RMS", `${analysis.demo.loudness.rmsDbfs.toFixed(1)} dBFS`, `${analysis.reference.loudness.rmsDbfs.toFixed(1)} dBFS`],
-    ["Onset proxy", `${analysis.demo.motion.onsetProxyPerMinute.toFixed(1)}/phút`, `${analysis.reference.motion.onsetProxyPerMinute.toFixed(1)}/phút`],
-    ["Outro 100 ms cuối", `${analysis.demo.motion.outroEndDb.toFixed(1)} dBFS`, `${analysis.reference.motion.outroEndDb.toFixed(1)} dBFS`],
+    ["Onset proxy", `${analysis.demo.motion.onsetProxyPerMinute.toFixed(1)}/min`, `${analysis.reference.motion.onsetProxyPerMinute.toFixed(1)}/min`],
+    ["Final 100 ms", `${analysis.demo.motion.outroEndDb.toFixed(1)} dBFS`, `${analysis.reference.motion.outroEndDb.toFixed(1)} dBFS`],
   ];
   return (
     <div className="report-stack">
-      <section className="report-panel"><PanelHeading index="01" title="Loudness & dynamic range" subtitle="Độ to không được dùng thay cho chất lượng" />
-        <div className="data-table dynamics-table"><div className="table-row table-head"><span>Chỉ số</span><span>Demo</span><span>Reference</span></div>{metrics.map(([label, demo, reference]) => <div className="table-row" key={label}><span>{label}</span><span>{demo}</span><span>{reference}</span></div>)}</div>
+      <section className="report-panel"><PanelHeading index="01" title="Loudness & Dynamic Range" subtitle="Loudness is not used as a substitute for quality" />
+        <div className="data-table dynamics-table"><div className="table-row table-head"><span>Metric</span><span>Demo</span><span>Reference</span></div>{metrics.map(([label, demo, reference]) => <div className="table-row" key={label}><span>{label}</span><span>{demo}</span><span>{reference}</span></div>)}</div>
       </section>
-      <section className="report-panel"><PanelHeading index="02" title="Các đoạn thay đổi đột ngột" subtitle="Ưu tiên trải nghiệm không gây giật mình" />
-        <div className="event-row"><b>Demo</b>{analysis.demo.motion.suddenEvents.length ? analysis.demo.motion.suddenEvents.slice(0, 6).map((event) => <span key={event.time}>{formatTimestamp(event.time)} <small>+{event.jumpDb.toFixed(1)} dB</small></span>) : <em>Không phát hiện sự kiện nổi bật</em>}</div>
-        <div className="event-row"><b>Reference</b>{analysis.reference.motion.suddenEvents.length ? analysis.reference.motion.suddenEvents.slice(0, 6).map((event) => <span key={event.time}>{formatTimestamp(event.time)} <small>+{event.jumpDb.toFixed(1)} dB</small></span>) : <em>Không phát hiện sự kiện nổi bật</em>}</div>
+      <section className="report-panel"><PanelHeading index="02" title="Sudden Level Changes" subtitle="Prioritizing a calm, non-startling listening experience" />
+        <div className="event-row"><b>Demo</b>{analysis.demo.motion.suddenEvents.length ? analysis.demo.motion.suddenEvents.slice(0, 6).map((event) => <span key={event.time}>{formatTimestamp(event.time)} <small>+{event.jumpDb.toFixed(1)} dB</small></span>) : <em>No notable events detected</em>}</div>
+        <div className="event-row"><b>Reference</b>{analysis.reference.motion.suddenEvents.length ? analysis.reference.motion.suddenEvents.slice(0, 6).map((event) => <span key={event.time}>{formatTimestamp(event.time)} <small>+{event.jumpDb.toFixed(1)} dB</small></span>) : <em>No notable events detected</em>}</div>
       </section>
-      <section className="report-panel"><PanelHeading index="03" title="Kết luận dynamics, melody và reverb" subtitle="Đo lường trước, suy luận sau" /><RelevantFindings analysis={analysis} sections={["Loudness & dynamics", "Melody & motif", "Arrangement & reverb"]} /></section>
+      <section className="report-panel"><PanelHeading index="03" title="Loudness & Dynamics Findings" subtitle="Measurement first, interpretation second" /><RelevantFindings analysis={analysis} sections={["Loudness & Dynamics"]} /></section>
     </div>
+  );
+}
+
+function PriorityTab({ analysis }: { analysis: PairAnalysis }) {
+  const high = analysis.findings.filter((finding) => finding.impact === "High");
+  const medium = analysis.findings.filter((finding) => finding.impact === "Medium");
+  const improvements = analysis.findings.filter((finding) => finding.impact === "Low" && finding.source === "Measurement");
+  const creative = analysis.findings.filter((finding) => finding.impact === "Low" && finding.source === "Inference");
+
+  return (
+    <div className="report-stack">
+      <section className="report-panel priority-intro">
+        <PanelHeading index="01" title="Priority Ranking" subtitle="Resolve release-critical issues first, then refine the mix" />
+        <p>Findings are ranked by measured impact, then by analysis section. Use the timestamp and A/B player to confirm each issue before changing the session.</p>
+      </section>
+      <div className="priority-groups">
+        <PriorityGroup label="Fix First" description="Address before release" tone="high" findings={high} />
+        <PriorityGroup label="Important Next" description="Review in the next mix pass" tone="medium" findings={medium} />
+        <PriorityGroup label="Additional Improvements" description="Optional measured refinements" tone="low" findings={improvements} />
+        <PriorityGroup label="Creative Preferences" description="Listening-led inferred refinements" tone="low" findings={creative} />
+      </div>
+    </div>
+  );
+}
+
+function PriorityGroup({ label, description, tone, findings }: { label: string; description: string; tone: "high" | "medium" | "low"; findings: Finding[] }) {
+  return (
+    <section className={`report-panel priority-group ${tone}`}>
+      <header><div><span /> <b>{label}</b></div><small>{description}</small><strong>{findings.length}</strong></header>
+      {findings.length
+        ? <div className="finding-list">{findings.map((finding, index) => <FindingCard key={finding.id} finding={finding} rank={index + 1} />)}</div>
+        : <div className="empty-findings"><span>✓</span>{tone === "high" ? "No critical issues detected" : "No findings at this priority level."}</div>}
+    </section>
   );
 }
 
@@ -529,15 +817,15 @@ function FeedbackTab({ analysis, copied, onCopy }: { analysis: PairAnalysis; cop
   return (
     <div className="feedback-layout">
       <section className="report-panel feedback-document">
-        <div className="feedback-head"><PanelHeading index="VN" title="Feedback hoàn chỉnh cho producer" subtitle="Lịch sự, theo mức độ ưu tiên và có timestamp" /><button type="button" onClick={onCopy}>{copied ? "Đã sao chép ✓" : "Sao chép toàn bộ"}</button></div>
+        <div className="feedback-head"><PanelHeading index="VN" title="Producer Feedback" subtitle="Output language: Vietnamese · prioritized and timestamped" /><button type="button" onClick={onCopy}>{copied ? "Copied ✓" : "Copy Feedback"}</button></div>
         <div className="feedback-section"><h3>Điểm đã làm tốt</h3>{analysis.feedback.good.map((item) => <p key={item}>{item}</p>)}</div>
         <div className="feedback-section"><h3>Các chỉnh sửa ưu tiên</h3>{analysis.feedback.priority.length ? analysis.feedback.priority.map((item) => <p key={item}>{item}</p>) : <p>Hiện chưa có lỗi kỹ thuật lớn; vui lòng kiểm tra lại bằng tai nghe trước khi master cuối.</p>}</div>
         <div className="feedback-section"><h3>Đề xuất bổ sung</h3>{analysis.feedback.supplemental.length ? analysis.feedback.supplemental.map((item) => <p key={item}>{item}</p>) : <p>Giữ nguyên các phần đang cân bằng và tránh xử lý toàn master nếu vấn đề chỉ nằm ở một layer.</p>}</div>
         <div className="feedback-section goal"><h3>Mục tiêu của bản chỉnh sửa tiếp theo</h3><p>{analysis.feedback.goal}</p></div>
       </section>
       <aside className="feedback-aside">
-        <section className="report-panel"><span className="aside-label">TRƯỚC KHI GỬI</span><ul><li>Nghe lại các timestamp bằng A/B player.</li><li>Các giá trị Hz và dB chỉ là điểm bắt đầu để thử.</li><li>“Suy luận” không đồng nghĩa với lỗi chắc chắn.</li><li>Ưu tiên chỉnh track hoặc bus trước master.</li></ul></section>
-        <section className="report-panel"><span className="aside-label">NÊN GIỮ</span><ul>{analysis.keepElements.map((item) => <li key={item}>{item}</li>)}</ul></section>
+        <section className="report-panel"><span className="aside-label">BEFORE SENDING</span><ul><li>Review each timestamp with the A/B player.</li><li>Hz and dB values are starting points, not prescriptions.</li><li>An inference is not a confirmed fault.</li><li>Adjust the source track or bus before the master.</li></ul></section>
+        <section className="report-panel"><span className="aside-label">PRESERVE</span><ul>{analysis.keepElements.map((item) => <li key={item}>{item}</li>)}</ul></section>
       </aside>
     </div>
   );
@@ -547,8 +835,8 @@ function SpectrumChart({ analysis }: { analysis: PairAnalysis }) {
   const curves = [
     { key: "demoL", label: "Demo L", color: "#29d6c7", dash: "", values: analysis.demo.spectral.curve.map((point) => ({ frequency: point.frequency, db: point.leftDb + analysis.loudnessMatch.demoGainDb })) },
     { key: "demoR", label: "Demo R", color: "#8cf3e9", dash: "4 5", values: analysis.demo.spectral.curve.map((point) => ({ frequency: point.frequency, db: point.rightDb + analysis.loudnessMatch.demoGainDb })) },
-    { key: "refL", label: "Ref L", color: "#e7a94b", dash: "", values: analysis.reference.spectral.curve.map((point) => ({ frequency: point.frequency, db: point.leftDb + analysis.loudnessMatch.referenceGainDb })) },
-    { key: "refR", label: "Ref R", color: "#f5d59d", dash: "4 5", values: analysis.reference.spectral.curve.map((point) => ({ frequency: point.frequency, db: point.rightDb + analysis.loudnessMatch.referenceGainDb })) },
+    { key: "refL", label: "Ref L", color: "#9f8cff", dash: "", values: analysis.reference.spectral.curve.map((point) => ({ frequency: point.frequency, db: point.leftDb + analysis.loudnessMatch.referenceGainDb })) },
+    { key: "refR", label: "Ref R", color: "#c8beff", dash: "4 5", values: analysis.reference.spectral.curve.map((point) => ({ frequency: point.frequency, db: point.rightDb + analysis.loudnessMatch.referenceGainDb })) },
   ];
   const all = curves.flatMap((curve) => curve.values.map((point) => point.db));
   const maxDb = Math.ceil(Math.max(...all) / 5) * 5 + 2;
@@ -558,12 +846,12 @@ function SpectrumChart({ analysis }: { analysis: PairAnalysis }) {
   return (
     <div className="spectrum-wrap">
       <div className="chart-legend">{curves.map((curve) => <span key={curve.key}><i style={{ background: curve.color }} />{curve.label}</span>)}</div>
-      <svg className="spectrum-chart" viewBox="0 0 900 290" role="img" aria-label="So sánh phổ L/R của Demo và Reference">
+      <svg className="spectrum-chart" viewBox="0 0 900 290" role="img" aria-label="Demo and Reference left/right spectrum comparison">
         {[0, 1, 2, 3, 4].map((line) => <g key={line}><line x1="46" x2="870" y1={18 + line * 59.5} y2={18 + line * 59.5} /><text x="4" y={22 + line * 59.5}>{Math.round(maxDb - line * (maxDb - minDb) / 4)}</text></g>)}
         {[20, 80, 250, 500, 2000, 4000, 10000, 20000].map((frequency) => <g key={frequency}><line className="vertical" x1={x(frequency)} x2={x(frequency)} y1="18" y2="256" /><text className="frequency-label" x={x(frequency)} y="280" textAnchor="middle">{frequency >= 1000 ? `${frequency / 1000}k` : frequency}</text></g>)}
         {curves.map((curve) => <polyline key={curve.key} points={curve.values.map((point) => `${x(point.frequency)},${y(point.db)}`).join(" ")} fill="none" stroke={curve.color} strokeWidth="1.8" strokeDasharray={curve.dash} vectorEffect="non-scaling-stroke" />)}
       </svg>
-      {analysis.demo.meta.codecWarning || analysis.reference.meta.codecWarning ? <div className="codec-banner"><b>Giới hạn codec:</b> chỉ kết luận vùng high tới khoảng {(Math.min(analysis.demo.meta.comparableHighHz, analysis.reference.meta.comparableHighHz) / 1000).toFixed(0)} kHz.</div> : null}
+      {analysis.demo.meta.codecWarning || analysis.reference.meta.codecWarning ? <div className="codec-banner"><b>Codec limit:</b> high-frequency conclusions are limited to approximately {(Math.min(analysis.demo.meta.comparableHighHz, analysis.reference.meta.comparableHighHz) / 1000).toFixed(0)} kHz.</div> : null}
     </div>
   );
 }
@@ -577,15 +865,21 @@ function BandDeltaChart({ analysis }: { analysis: PairAnalysis }) {
 
 function RelevantFindings({ analysis, sections }: { analysis: PairAnalysis; sections: Finding["section"][] }) {
   const findings = analysis.findings.filter((finding) => sections.includes(finding.section));
-  if (!findings.length) return <div className="empty-findings"><span>✓</span>Không phát hiện khác biệt đáng kể trong nhóm này.</div>;
+  if (!findings.length) return <div className="empty-findings"><span>✓</span>No material differences were detected in this category.</div>;
   return <div className="finding-list">{findings.map((finding) => <FindingCard key={finding.id} finding={finding} />)}</div>;
 }
 
 function FindingCard({ finding, rank }: { finding: Finding; rank?: number }) {
+  const impactClass = finding.impact === "High" ? "high" : finding.impact === "Medium" ? "medium" : "low";
   return (
-    <article className={`finding-card impact-${finding.impact.toLowerCase().replace("ấ", "a").replace("ư", "u").replace("ơ", "o")}`}>
+    <article className={`finding-card ${impactClass}`}>
       <div className="finding-rank">{rank ? String(rank).padStart(2, "0") : <span />}</div>
-      <div className="finding-main"><div className="finding-title"><h3>{finding.title}</h3><span className={`impact-badge ${finding.impact === "Cao" ? "high" : finding.impact === "Trung bình" ? "medium" : "low"}`}>{finding.impact}</span></div><div className="finding-meta"><span>{finding.section}</span><span>{finding.timestamp}</span><span>{finding.source}</span><span>Chắc chắn: {finding.confidence}</span></div><p>{finding.evidence}</p><div className="recommendation"><b>Hướng xử lý</b>{finding.recommendation}</div></div>
+      <div className="finding-main">
+        <div className="finding-title"><h3>{finding.title}</h3><span className={`impact-badge ${impactClass}`}>{finding.impact} impact</span></div>
+        <div className="finding-meta"><span className="timestamp">Detected At: {finding.timestamp}</span><span>Affected Element: {finding.section}</span><span>Source: {finding.source}</span><span>Confidence: {finding.confidence}</span></div>
+        <div className="finding-evidence"><b>Demo vs Reference Difference</b><p>{finding.evidence}</p></div>
+        <div className="recommendation"><b>Recommended Adjustment</b>{finding.recommendation}</div>
+      </div>
     </article>
   );
 }
