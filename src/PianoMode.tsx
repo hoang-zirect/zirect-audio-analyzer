@@ -1,0 +1,51 @@
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { analyzeAudioTonality, parseMidi, PianoReport } from "./piano-analysis";
+import { GlassButton } from "./components/GlassButton";
+
+const AUDIO_ACCEPT = ".wav,.flac,.mp3,.m4a,.aac,.ogg,.opus";
+const time = (value: number) => `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, "0")}`;
+
+export function PianoMode() {
+  const [demo, setDemo] = useState<File>(); const [reference, setReference] = useState<File>(); const [midi, setMidi] = useState<File>();
+  const [report, setReport] = useState<PianoReport>(); const [audioResult, setAudioResult] = useState<{ bpm: number; bpmConfidence: number; key: string; keyConfidence: number; duration: number }>();
+  const [bpm, setBpm] = useState(0); const [key, setKey] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [position, setPosition] = useState(0);
+  const audio = useRef<HTMLAudioElement>(null); const demoUrl = useMemo(() => demo ? URL.createObjectURL(demo) : "", [demo]); const referenceUrl = useMemo(() => reference ? URL.createObjectURL(reference) : "", [reference]);
+  useEffect(() => () => { if (demoUrl) URL.revokeObjectURL(demoUrl); if (referenceUrl) URL.revokeObjectURL(referenceUrl); }, [demoUrl, referenceUrl]);
+  const choose = (setter: (f: File) => void) => (e: ChangeEvent<HTMLInputElement>) => { const f = e.target.files?.[0]; if (f) { setter(f); setReport(undefined); setError(""); } };
+  const analyze = async () => { if (!demo || !midi) return; setBusy(true); setError(""); try { const [m, a] = await Promise.all([parseMidi(await midi.arrayBuffer()), analyzeAudioTonality(demo)]); setReport(m); setAudioResult(a); setBpm(a.bpm); setKey(a.key); } catch (e) { setError(e instanceof Error ? e.message : "Analysis failed."); } finally { setBusy(false); } };
+  if (report && audioResult) return <PianoReportView report={report} audioResult={audioResult} bpm={bpm} keyName={key} setBpm={setBpm} setKey={setKey} demoUrl={demoUrl} referenceUrl={referenceUrl} demoName={demo!.name} audio={audio} position={position} setPosition={setPosition} onNew={() => setReport(undefined)} />;
+  return <div className="content piano-upload">
+    <section className="piano-hero"><p className="eyebrow">ZIRECT · COMPOSITION REVIEW</p><h1>Piano Relaxing</h1><p>Review melody and composition—never EQ, stereo, loudness, mixing, or mastering. Every measurement runs privately in your browser.</p></section>
+    <section className="piano-files">
+      <FileTile title="Demo audio" detail="Required · tempo and tonal-center detection" accept={AUDIO_ACCEPT} file={demo} onChange={choose(setDemo)} />
+      <FileTile title="Reference audio" detail="Optional · listening context only" accept={AUDIO_ACCEPT} file={reference} onChange={choose(setReference)} />
+      <FileTile title="Composition MIDI" detail="Required · notes, harmony, form and melody" accept=".mid,.midi,audio/midi" file={midi} onChange={choose(setMidi)} />
+    </section>
+    <div className="piano-scope"><b>Composition-only scope</b><span>Motifs</span><span>Phrasing</span><span>Contour</span><span>Rhythm</span><span>Harmony</span><span>Cadence</span></div>
+    {error && <p className="analysis-error" role="alert">{error}</p>}
+    <GlassButton className="piano-analyze" size="lg" variant="primary" disabled={!demo || !midi || busy} loading={busy} onClick={analyze}>{busy ? "Reading audio and MIDI…" : "Review Composition →"}</GlassButton>
+  </div>;
+}
+function FileTile({ title, detail, accept, file, onChange }: { title: string; detail: string; accept: string; file?: File; onChange: (e: ChangeEvent<HTMLInputElement>) => void }) { return <label className={`piano-file ${file ? "ready" : ""}`}><span className="piano-file-icon">{file ? "✓" : "+"}</span><b>{title}</b><small>{file?.name ?? detail}</small><input type="file" accept={accept} onChange={onChange} /></label>; }
+
+function PianoReportView({ report, audioResult, bpm, keyName, setBpm, setKey, demoUrl, referenceUrl, demoName, audio, position, setPosition, onNew }: { report: PianoReport; audioResult: { bpm: number; bpmConfidence: number; key: string; keyConfidence: number }; bpm: number; keyName: string; setBpm: (n: number) => void; setKey: (s: string) => void; demoUrl: string; referenceUrl: string; demoName: string; audio: React.RefObject<HTMLAudioElement | null>; position: number; setPosition: (n: number) => void; onNew: () => void }) {
+  const [source, setSource] = useState<"demo" | "reference">("demo");
+  const changeSource = (next: "demo" | "reference") => { if (next === "reference" && !referenceUrl) return; setSource(next); if (audio.current) { const wasPlaying = !audio.current.paused; audio.current.src = next === "demo" ? demoUrl : referenceUrl; audio.current.currentTime = Math.min(position, audio.current.duration || position); if (wasPlaying) void audio.current.play(); } };
+  return <div className="content piano-report">
+    <section className="piano-report-head"><div><p className="eyebrow">PIANO RELAXING · COMPOSITION REPORT</p><h1>{demoName}</h1><p>Transparent heuristics are prompts for critical listening—not objective judgments.</p></div><div className="piano-score"><strong>{report.score}</strong><span>/ 100</span><small>MELODY SCORE</small></div><button onClick={onNew}>New review</button></section>
+    <section className="piano-detection">
+      <div><span>Audio BPM</span><label><input aria-label="Correct BPM" type="number" min="30" max="300" value={bpm} onChange={e => setBpm(Number(e.target.value))} /><small>{audioResult.bpmConfidence}% confidence · editable</small></label></div>
+      <div><span>Tonal center</span><label><input aria-label="Correct tonal center" value={keyName} onChange={e => setKey(e.target.value)} /><small>{audioResult.keyConfidence}% confidence · editable</small></label></div>
+      <div><span>MIDI tempo</span><strong>{report.bpm} BPM</strong></div><div><span>Meter</span><strong>{report.timeSignature}</strong></div><div><span>MIDI key</span><strong>{report.key}</strong></div><div><span>Duration / range</span><strong>{time(report.duration)} · {report.noteRange}</strong></div>
+    </section>
+    <section className="piano-viz"><header><h2>Piano roll</h2><span>{report.notes.length} notes · playhead {time(position)}</span></header><PianoRoll report={report} position={position} /><header><h2>Melody contour</h2><span>Highest active voice</span></header><Contour report={report} /></section>
+    <section className="piano-chords"><header><h2>Chord timeline</h2><b>{report.progression || "No stable progression detected"}</b></header><div>{report.chords.map((c, i) => <button key={`${c.start}-${i}`} style={{ flex: c.end - c.start }} onClick={() => { if (audio.current) audio.current.currentTime = c.start; }}><strong>{c.name}</strong><small>{c.roman} · {time(c.start)}</small></button>)}</div></section>
+    <section className="piano-metrics"><header><h2>Melody heuristics</h2><span>How every score was derived</span></header><div>{report.metrics.map(m => <article key={m.label}><div><b>{m.label}</b><strong>{m.score}</strong></div><meter min="0" max="100" value={m.score} /><p>{m.explanation}</p></article>)}</div></section>
+    <section className="piano-feedback"><div><h2>Producer feedback</h2><p>{producerFeedback(report)}</p><h3>Listening checklist</h3><ul><li>Can you hum the central motif after one listen?</li><li>Do phrase endings leave enough space to breathe?</li><li>Does each contour peak feel earned rather than random?</li><li>Do non-diatonic notes sound intentional?</li><li>Does the final cadence provide the desired emotional closure?</li></ul></div><aside><b>Keep in focus</b><p>This report deliberately excludes frequency balance, stereo width, LUFS, compression, sound selection, mix, and master quality.</p></aside></section>
+    <div className="piano-player"><audio ref={audio} src={demoUrl} controls onTimeUpdate={e => setPosition(e.currentTarget.currentTime)} /><div><button className={source === "demo" ? "active" : ""} onClick={() => changeSource("demo")}>Demo</button><button disabled={!referenceUrl} className={source === "reference" ? "active" : ""} onClick={() => changeSource("reference")}>Reference</button></div><span>{time(position)} / {time(source === "demo" ? audioResultDuration(report) : report.duration)}</span></div>
+  </div>;
+}
+const audioResultDuration = (r: PianoReport) => r.duration;
+function PianoRoll({ report, position }: { report: PianoReport; position: number }) { const min = Math.min(...report.notes.map(n => n.note)); const max = Math.max(...report.notes.map(n => n.note)); return <svg className="piano-roll" viewBox="0 0 1000 280" role="img" aria-label="MIDI piano roll"><g className="roll-grid">{Array.from({ length: 13 }, (_, i) => <line key={i} x1={i * 1000 / 12} x2={i * 1000 / 12} y1="0" y2="280" />)}</g>{report.notes.map((n, i) => <rect key={i} x={n.start / report.duration * 1000} y={(max - n.note) / Math.max(1, max - min + 1) * 260} width={Math.max(2, n.duration / report.duration * 1000)} height={Math.max(3, 250 / (max - min + 1))} rx="2" />)}<line className="playhead" x1={position / report.duration * 1000} x2={position / report.duration * 1000} y1="0" y2="280" /></svg>; }
+function Contour({ report }: { report: PianoReport }) { const lead = report.notes.filter((n, i, a) => !a.some((o, j) => j !== i && Math.abs(o.start - n.start) < .02 && o.note > n.note)); const min = Math.min(...lead.map(n => n.note)); const max = Math.max(...lead.map(n => n.note)); const points = lead.map(n => `${n.start / report.duration * 1000},${170 - (n.note - min) / Math.max(1, max - min) * 150}`).join(" "); return <svg className="contour" viewBox="0 0 1000 190" role="img" aria-label="Melody contour"><polyline points={points} /></svg>; }
+function producerFeedback(report: PianoReport) { const low = [...report.metrics].sort((a, b) => a.score - b.score).slice(0, 2); const high = [...report.metrics].sort((a, b) => b.score - a.score)[0]; return `The strongest current quality is ${high.label.toLowerCase()} (${high.score}/100). On the next writing pass, focus on ${low.map(x => x.label.toLowerCase()).join(" and ")}. Preserve the recognizable material, then audition each edit by ear; these measurements describe the MIDI, not its emotional value.`; }
