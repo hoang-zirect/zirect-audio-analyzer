@@ -21,15 +21,15 @@ const note = (note: number, start: number, duration = .4): MidiNote => ({ note, 
 describe("parseMidi", () => {
   it("uses a 90 BPM event at tick zero instead of the 120 BPM fallback", () => expect(parseMidi(midiFixture({ bpm: 90 })).bpm).toBe(90));
   it("applies tempo changes while converting ticks to seconds", () => expect(parseMidi(midiFixture({ bpm: 90, tempoChange: 120 })).duration).toBeCloseTo(7 / 6, 4));
-  it("maps zero fifths in minor mode to A minor", () => expect(parseMidi(midiFixture({ minor: true })).key).toBe("A minor"));
-  it("rejects non-MIDI input", () => expect(() => parseMidi(new Uint8Array([1,2,3,4]).buffer)).toThrow(/not a Standard MIDI/));
+  it("maps zero fifths in minor mode to A minor", () => expect(parseMidi(midiFixture({ minor: true })).key).toBe("A thứ"));
+  it("rejects non-MIDI input", () => expect(() => parseMidi(new Uint8Array([1,2,3,4]).buffer)).toThrow(/tệp MIDI tiêu chuẩn/));
 });
 
 describe("melody voice extraction", () => {
   it("selects the top note at every onset and excludes block-chord bass notes", () => {
     const notes = [note(36, 0), note(48, 0), note(72, 0), note(38, .5), note(50, .5), note(74, .5), note(40, 1), note(52, 1), note(76, 1)];
     expect(extractTopMelody(notes).map(n => n.note)).toEqual([72, 74, 76]);
-    expect(scoreMelody(notes, { tonic: 0, mode: "major" }).find(metric => metric.label === "Range")?.explanation).toMatch(/^4 semitones/);
+    expect(scoreMelody(notes, { tonic: 0, mode: "major" }).find(metric => metric.label === "Âm vực")?.explanation).toMatch(/^4 bán âm/);
   });
   it("ignores lower accompaniment onsets while a sustained C5 melody is sounding", () => {
     const notes = [note(72, 0, 2), note(52, .5, .3), note(55, 1, .3), note(74, 2, .5)];
@@ -39,7 +39,7 @@ describe("melody voice extraction", () => {
     const notes = [note(72, 0, 2), note(52, .5), note(55, 1), note(76, 2)];
     const melody = extractTopMelody(notes);
     expect(melodyContourNotes(notes)).toEqual(melody);
-    expect(scoreMelody(notes, { tonic: 0, mode: "major" }).find(metric => metric.label === "Range")?.explanation).toMatch(/^4 semitones/);
+    expect(scoreMelody(notes, { tonic: 0, mode: "major" }).find(metric => metric.label === "Âm vực")?.explanation).toMatch(/^4 bán âm/);
   });
 });
 
