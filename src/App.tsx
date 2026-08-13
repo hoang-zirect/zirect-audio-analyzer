@@ -188,7 +188,7 @@ function AppHeader({ mode, onMode, view, hasReport, onNew, onReport }: { mode: "
         </button>
         <nav className="header-nav" aria-label="Primary navigation">
           <GlassButton className={mode === "sleep" ? "active" : ""} size="default" variant="secondary" type="button" onClick={() => onMode("sleep")}>Deep Sleep</GlassButton>
-          <GlassButton className={mode === "piano" ? "active" : ""} size="default" variant="secondary" type="button" onClick={() => onMode("piano")}>Piano Relaxing</GlassButton>
+          <GlassButton className={mode === "piano" ? "active" : ""} size="default" variant="secondary" type="button" onClick={() => onMode("piano")}>Piano thư giãn</GlassButton>
           {mode === "sleep" ? <>
           <GlassButton className={`header-new-analysis ${view === "new" ? "active" : ""}`} size="default" variant="secondary" type="button" onClick={onNew} aria-current={view === "new" ? "page" : undefined}>New Analysis</GlassButton>
           <GlassButton className={`header-report-button ${view === "report" ? "active" : ""}`} size="default" variant="secondary" type="button" disabled={!hasReport} onClick={onReport} aria-current={view === "report" ? "page" : undefined}>Analysis Report</GlassButton>
