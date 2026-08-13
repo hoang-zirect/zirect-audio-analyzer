@@ -23,14 +23,14 @@ function readVariable(data: Uint8Array, state: { p: number }) {
 /** Parses Standard MIDI files without uploading them or requiring a third-party API. */
 export function parseMidi(buffer: ArrayBuffer): PianoReport {
   const d = new Uint8Array(buffer); const view = new DataView(buffer);
-  if (String.fromCharCode(...d.slice(0, 4)) !== "MThd") throw new Error("This is not a Standard MIDI file.");
+  if (String.fromCharCode(...d.slice(0, 4)) !== "MThd") throw new Error("Đây không phải là tệp MIDI tiêu chuẩn.");
   const tracks = view.getUint16(10); const division = view.getUint16(12);
-  if (division & 0x8000) throw new Error("SMPTE-timed MIDI is not supported.");
+  if (division & 0x8000) throw new Error("MIDI sử dụng định thời SMPTE hiện chưa được hỗ trợ.");
   let p = 8 + view.getUint32(4); const rawNotes: Array<{ note: number; start: number; end: number; velocity: number }> = [];
   const tempos: Array<{ tick: number; mpqn: number; order: number }> = [];
   let tempoOrder = 0; let signature = "4/4"; let declaredTonality: Tonality | undefined;
   for (let t = 0; t < tracks; t++) {
-    if (String.fromCharCode(...d.slice(p, p + 4)) !== "MTrk") throw new Error("The MIDI track data is malformed.");
+    if (String.fromCharCode(...d.slice(p, p + 4)) !== "MTrk") throw new Error("Dữ liệu track MIDI bị lỗi.");
     const end = p + 8 + view.getUint32(p + 4); const s = { p: p + 8 }; let tick = 0; let status = 0;
     const active = new Map<string, Array<{ tick: number; velocity: number }>>();
     while (s.p < end) {
@@ -55,8 +55,8 @@ export function parseMidi(buffer: ArrayBuffer): PianoReport {
     .filter((event, index, all) => index === all.length - 1 || event.tick !== all[index + 1].tick);
   const tickToSeconds = (tick: number) => { let seconds = 0; let prev = 0; let tempo = tempoMap[0].mpqn; for (const e of tempoMap.slice(1)) { if (e.tick >= tick) break; seconds += (e.tick - prev) * tempo / division / 1e6; prev = e.tick; tempo = e.mpqn; } return seconds + (tick - prev) * tempo / division / 1e6; };
   const notes = rawNotes.map(n => ({ note: n.note, name: noteName(n.note), start: tickToSeconds(n.start), duration: tickToSeconds(n.end) - tickToSeconds(n.start), velocity: n.velocity })).sort((a, b) => a.start - b.start || a.note - b.note);
-  if (!notes.length) throw new Error("No playable notes were found in this MIDI file.");
-  const tonality = declaredTonality ?? { tonic: inferTonic(notes), mode: "major" as const }; const key = `${NAMES[tonality.tonic]} ${tonality.mode}`;
+  if (!notes.length) throw new Error("Không tìm thấy nốt nhạc có thể phát trong tệp MIDI này.");
+  const tonality = declaredTonality ?? { tonic: inferTonic(notes), mode: "major" as const }; const key = `${NAMES[tonality.tonic]} ${tonality.mode === "major" ? "trưởng" : "thứ"}`;
   const chords = inferChords(notes, tonality); const metrics = scoreMelody(notes, tonality, signature);
   return { bpm: Math.round(60e6 / tempoMap[0].mpqn), timeSignature: signature, key, duration: Math.max(...notes.map(n => n.start + n.duration)), noteRange: `${noteName(Math.min(...notes.map(n => n.note)))}–${noteName(Math.max(...notes.map(n => n.note)))}`, notes, chords, progression: chords.map(c => c.roman).filter((v, i, a) => v !== a[i - 1]).join(" – "), metrics, score: Math.round(metrics.reduce((s, m) => s + m.score, 0) / metrics.length) };
 }
@@ -90,14 +90,14 @@ export const melodyContourNotes = (notes: MidiNote[]) => extractTopMelody(notes)
 export function scoreMelody(notes: MidiNote[], tonality: Tonality | number, signature = "4/4"): MelodyMetric[] {
   const resolved = typeof tonality === "number" ? { tonic: tonality, mode: "major" as const } : tonality; const lead = extractTopMelody(notes); const intervals = lead.slice(1).map((n, i) => n.note - lead[i].note); const uniqueIntervals = new Set(intervals).size; const range = Math.max(...lead.map(n => n.note)) - Math.min(...lead.map(n => n.note)); const scaleFit = lead.filter(n => (SCALES[resolved.mode] as readonly number[]).includes((n.note - resolved.tonic + 12) % 12)).length / lead.length; const rests = lead.slice(1).filter((n, i) => n.start - (lead[i].start + lead[i].duration) > .15).length; const repeats = intervals.slice(0, -3).filter((_, i) => intervals.slice(i, i + 3).join() === intervals.slice(i + 3, i + 6).join()).length; const durations = new Set(lead.map(n => Math.round(n.duration * 8))).size;
   return [
-    { label: "Motif & repetition", score: clamp(45 + repeats * 15), explanation: `${repeats} recurring three-interval patterns; rewards recognition without judging production.` },
-    { label: "Phrasing", score: clamp(50 + Math.min(35, rests * 7)), explanation: `${rests} audible phrase breaths create musical punctuation.` },
-    { label: "Contour", score: clamp(50 + Math.min(35, uniqueIntervals * 4) - Math.max(0, uniqueIntervals - 10) * 3), explanation: `${uniqueIntervals} interval shapes balance direction and cohesion.` },
-    { label: "Rhythmic variety", score: clamp(45 + durations * 9), explanation: `${durations} distinct note-length values in ${signature}.` },
-    { label: "Tonal fit", score: clamp(scaleFit * 100), explanation: `${Math.round(scaleFit * 100)}% of melody notes fit the inferred diatonic collection.` },
-    { label: "Range", score: clamp(100 - Math.abs(range - 16) * 4), explanation: `${range} semitones; a singable, expressive target is roughly 12–20.` },
-    { label: "Cadence", score: clamp(lead.at(-1) && ([0, 7] as number[]).includes((lead.at(-1)!.note - resolved.tonic + 12) % 12) ? 90 : 52), explanation: "Checks whether the closing pitch supports tonal resolution." },
-    { label: "Memorability", score: clamp(35 + repeats * 10 + scaleFit * 30 + Math.min(20, rests * 3)), explanation: "Composite of motif return, tonal clarity, and phrase separation." },
+    { label: "Mô-típ & sự lặp lại", score: clamp(45 + repeats * 15), explanation: `${repeats} mẫu gồm ba quãng được lặp lại; phản ánh độ nhận diện mà không đánh giá phần production.` },
+    { label: "Câu nhạc", score: clamp(50 + Math.min(35, rests * 7)), explanation: `${rests} khoảng nghỉ nghe rõ giúp phân chia câu nhạc.` },
+    { label: "Đường nét", score: clamp(50 + Math.min(35, uniqueIntervals * 4) - Math.max(0, uniqueIntervals - 10) * 3), explanation: `${uniqueIntervals} kiểu chuyển quãng tạo sự cân bằng giữa hướng đi và tính liền mạch.` },
+    { label: "Đa dạng tiết tấu", score: clamp(45 + durations * 9), explanation: `${durations} trường độ nốt khác nhau trong nhịp ${signature}.` },
+    { label: "Độ phù hợp với tông", score: clamp(scaleFit * 100), explanation: `${Math.round(scaleFit * 100)}% nốt giai điệu nằm trong thang âm suy đoán.` },
+    { label: "Âm vực", score: clamp(100 - Math.abs(range - 16) * 4), explanation: `${range} bán âm; khoảng mục tiêu dễ nghe và giàu biểu cảm thường vào khoảng 12–20 bán âm.` },
+    { label: "Kết câu", score: clamp(lead.at(-1) && ([0, 7] as number[]).includes((lead.at(-1)!.note - resolved.tonic + 12) % 12) ? 90 : 52), explanation: "Kiểm tra xem nốt cuối có hỗ trợ cảm giác kết thúc theo tông hay không." },
+    { label: "Độ ghi nhớ", score: clamp(35 + repeats * 10 + scaleFit * 30 + Math.min(20, rests * 3)), explanation: "Tổng hợp từ sự lặp lại của mô-típ, độ rõ của tông và khoảng nghỉ giữa các câu." },
   ];
 }
 
