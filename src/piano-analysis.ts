@@ -68,7 +68,25 @@ export function inferChords(notes: MidiNote[], tonality: Tonality) {
   for (let start = 0; start < duration; start += step) { const pcs = Array(12).fill(0); const active = notes.filter(n => n.start < start + step && n.start + n.duration > start); if (!active.length) continue; active.forEach(n => pcs[n.note % 12] += Math.min(n.start + n.duration, start + step) - Math.max(n.start, start)); let best = { root: 0, minor: false, value: -1 }; for (let root = 0; root < 12; root++) for (const minor of [false, true]) { const value = pcs[root] + pcs[(root + (minor ? 3 : 4)) % 12] * .8 + pcs[(root + 7) % 12] * .7; if (value > best.value) best = { root, minor, value }; } const degree = (SCALES[tonality.mode] as readonly number[]).indexOf((best.root - tonality.tonic + 12) % 12); const roman = degree >= 0 ? ROMAN[tonality.mode][degree] : NAMES[best.root]; const name = `${NAMES[best.root]}${best.minor ? "m" : ""}`; const previous = out.at(-1); if (previous?.name === name && Math.abs(previous.end - start) < .001) previous.end = Math.min(duration, start + step); else out.push({ start, end: Math.min(duration, start + step), name, roman }); }
   return out;
 }
-export function extractTopMelody(notes: MidiNote[]) { const sorted = [...notes].sort((a, b) => a.start - b.start || b.note - a.note); const lead: MidiNote[] = []; for (const note of sorted) { const simultaneous = lead.at(-1) && Math.abs(lead.at(-1)!.start - note.start) < .02; if (!simultaneous) lead.push(note); } return lead; }
+export function extractTopMelody(notes: MidiNote[]) {
+  const onsetTolerance = .02;
+  const sustainedOverlapTolerance = .03;
+  const sorted = [...notes].sort((a, b) => a.start - b.start || b.note - a.note);
+  const lead: MidiNote[] = [];
+  for (let index = 0; index < sorted.length;) {
+    const onset = sorted[index].start;
+    const group: MidiNote[] = [];
+    while (index < sorted.length && sorted[index].start - onset <= onsetTolerance) group.push(sorted[index++]);
+    const candidate = group.reduce((highest, note) => note.note > highest.note ? note : highest);
+    const soundingHigherVoice = lead.some(note =>
+      note.note > candidate.note && note.start < onset && note.start + note.duration > onset + sustainedOverlapTolerance,
+    );
+    if (!soundingHigherVoice) lead.push(candidate);
+  }
+  return lead;
+}
+
+export const melodyContourNotes = (notes: MidiNote[]) => extractTopMelody(notes);
 export function scoreMelody(notes: MidiNote[], tonality: Tonality | number, signature = "4/4"): MelodyMetric[] {
   const resolved = typeof tonality === "number" ? { tonic: tonality, mode: "major" as const } : tonality; const lead = extractTopMelody(notes); const intervals = lead.slice(1).map((n, i) => n.note - lead[i].note); const uniqueIntervals = new Set(intervals).size; const range = Math.max(...lead.map(n => n.note)) - Math.min(...lead.map(n => n.note)); const scaleFit = lead.filter(n => (SCALES[resolved.mode] as readonly number[]).includes((n.note - resolved.tonic + 12) % 12)).length / lead.length; const rests = lead.slice(1).filter((n, i) => n.start - (lead[i].start + lead[i].duration) > .15).length; const repeats = intervals.slice(0, -3).filter((_, i) => intervals.slice(i, i + 3).join() === intervals.slice(i + 3, i + 6).join()).length; const durations = new Set(lead.map(n => Math.round(n.duration * 8))).size;
   return [
@@ -84,5 +102,20 @@ export function scoreMelody(notes: MidiNote[], tonality: Tonality | number, sign
 }
 
 export async function analyzeAudioTonality(file: File) {
-  const context = new AudioContext(); try { const buffer = await context.decodeAudioData(await file.arrayBuffer()); const data = buffer.getChannelData(0); const sr = buffer.sampleRate; const hop = Math.max(1, Math.floor(sr * .05)); const energy: number[] = []; for (let i = 0; i < data.length; i += hop) { let sum = 0; for (let j = i; j < Math.min(data.length, i + hop); j++) sum += data[j] * data[j]; energy.push(Math.sqrt(sum / hop)); } const onsets = energy.map((e, i) => i && e > energy[i - 1] * 1.35 && e > .01 ? 1 : 0); let bestLag = 20; let best = 0; for (let lag = 6; lag <= 24; lag++) { let score = 0; for (let i = lag; i < onsets.length; i++) score += onsets[i] * onsets[i - lag]; if (score > best) { best = score; bestLag = lag; } } let bpm = 1200 / bestLag; while (bpm < 60) bpm *= 2; while (bpm > 180) bpm /= 2; const chroma = Array(12).fill(0); const stride = Math.max(1, Math.floor(data.length / 120000)); for (let midi = 36; midi <= 84; midi++) { const freq = 440 * 2 ** ((midi - 69) / 12); let re = 0, im = 0; for (let i = 0; i < data.length; i += stride) { const phase = 2 * Math.PI * freq * i / sr; re += data[i] * Math.cos(phase); im -= data[i] * Math.sin(phase); } chroma[midi % 12] += Math.hypot(re, im); } const tonic = chroma.indexOf(Math.max(...chroma)); const confidence = Math.round(100 * chroma[tonic] / Math.max(1, chroma.reduce((a, b) => a + b))); return { bpm: Math.round(bpm), bpmConfidence: clamp(35 + best * 4), key: NAMES[tonic], keyConfidence: clamp(confidence * 4), duration: buffer.duration }; } finally { await context.close(); }
+  const context = new AudioContext(); try { const buffer = await context.decodeAudioData(await file.arrayBuffer()); const data = buffer.getChannelData(0); const sr = buffer.sampleRate; const hop = Math.max(1, Math.floor(sr * .05)); const energy: number[] = []; for (let i = 0; i < data.length; i += hop) { let sum = 0; for (let j = i; j < Math.min(data.length, i + hop); j++) sum += data[j] * data[j]; energy.push(Math.sqrt(sum / hop)); } const onsets = energy.map((e, i) => i && e > energy[i - 1] * 1.35 && e > .01 ? 1 : 0); const { bpm, strength } = detectBpmFromOnsets(onsets); const chroma = Array(12).fill(0); const stride = Math.max(1, Math.floor(data.length / 120000)); for (let midi = 36; midi <= 84; midi++) { const freq = 440 * 2 ** ((midi - 69) / 12); let re = 0, im = 0; for (let i = 0; i < data.length; i += stride) { const phase = 2 * Math.PI * freq * i / sr; re += data[i] * Math.cos(phase); im -= data[i] * Math.sin(phase); } chroma[midi % 12] += Math.hypot(re, im); } const tonic = chroma.indexOf(Math.max(...chroma)); const confidence = Math.round(100 * chroma[tonic] / Math.max(1, chroma.reduce((a, b) => a + b))); return { bpm, bpmConfidence: clamp(35 + strength * 4), key: NAMES[tonic], keyConfidence: clamp(confidence * 4), duration: buffer.duration }; } finally { await context.close(); }
+}
+
+export function detectBpmFromOnsets(onsets: number[], frameSeconds = .05) {
+  const minimumBpm = 30;
+  const maximumBpm = 180;
+  const minimumLag = Math.max(1, Math.floor(60 / maximumBpm / frameSeconds));
+  const maximumLag = Math.max(minimumLag, Math.ceil(60 / minimumBpm / frameSeconds));
+  let bestLag = Math.round(60 / 60 / frameSeconds);
+  let strength = -1;
+  for (let lag = minimumLag; lag <= maximumLag; lag++) {
+    let score = 0;
+    for (let index = lag; index < onsets.length; index++) score += onsets[index] * onsets[index - lag];
+    if (score > strength) { strength = score; bestLag = lag; }
+  }
+  return { bpm: Math.round(60 / (bestLag * frameSeconds)), strength: Math.max(0, strength) };
 }

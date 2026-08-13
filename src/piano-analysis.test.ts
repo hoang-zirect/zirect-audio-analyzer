@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractTopMelody, inferChords, parseMidi, scoreMelody, type MidiNote } from "./piano-analysis";
+import { detectBpmFromOnsets, extractTopMelody, inferChords, melodyContourNotes, parseMidi, scoreMelody, type MidiNote } from "./piano-analysis";
 
 const variable = (value: number) => { const out = [value & 0x7f]; while ((value >>= 7)) out.unshift((value & 0x7f) | 0x80); return out; };
 const tempo = (bpm: number) => { const mpqn = Math.round(60_000_000 / bpm); return [0xff, 0x51, 3, (mpqn >>> 16) & 255, (mpqn >>> 8) & 255, mpqn & 255]; };
@@ -30,6 +30,23 @@ describe("melody voice extraction", () => {
     const notes = [note(36, 0), note(48, 0), note(72, 0), note(38, .5), note(50, .5), note(74, .5), note(40, 1), note(52, 1), note(76, 1)];
     expect(extractTopMelody(notes).map(n => n.note)).toEqual([72, 74, 76]);
     expect(scoreMelody(notes, { tonic: 0, mode: "major" }).find(metric => metric.label === "Range")?.explanation).toMatch(/^4 semitones/);
+  });
+  it("ignores lower accompaniment onsets while a sustained C5 melody is sounding", () => {
+    const notes = [note(72, 0, 2), note(52, .5, .3), note(55, 1, .3), note(74, 2, .5)];
+    expect(extractTopMelody(notes).map(n => n.note)).toEqual([72, 74]);
+  });
+  it("uses exactly the same extracted notes for contour and scoring", () => {
+    const notes = [note(72, 0, 2), note(52, .5), note(55, 1), note(76, 2)];
+    const melody = extractTopMelody(notes);
+    expect(melodyContourNotes(notes)).toEqual(melody);
+    expect(scoreMelody(notes, { tonic: 0, mode: "major" }).find(metric => metric.label === "Range")?.explanation).toMatch(/^4 semitones/);
+  });
+});
+
+describe("audio tempo detection", () => {
+  it("keeps a genuine 50 BPM pulse at 50 BPM", () => {
+    const onsets = Array(121).fill(0); for (let index = 0; index < onsets.length; index += 24) onsets[index] = 1;
+    expect(detectBpmFromOnsets(onsets).bpm).toBe(50);
   });
 });
 
