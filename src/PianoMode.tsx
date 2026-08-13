@@ -1,16 +1,26 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
 import { analyzeAudioTonality, melodyContourNotes, parseMidi, PianoReport } from "./piano-analysis";
 import { GlassButton } from "./components/GlassButton";
 
 const AUDIO_ACCEPT = ".wav,.flac,.mp3,.m4a,.aac,.ogg,.opus";
 const time = (value: number) => `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, "0")}`;
 
+function useObjectUrl(file?: File) {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    if (!file) { setUrl(""); return; }
+    const nextUrl = URL.createObjectURL(file);
+    setUrl(nextUrl);
+    return () => URL.revokeObjectURL(nextUrl);
+  }, [file]);
+  return url;
+}
+
 export function PianoMode() {
   const [demo, setDemo] = useState<File>(); const [reference, setReference] = useState<File>(); const [midi, setMidi] = useState<File>();
   const [report, setReport] = useState<PianoReport>(); const [audioResult, setAudioResult] = useState<{ bpm: number; bpmConfidence: number; key: string; keyConfidence: number; duration: number }>();
   const [bpm, setBpm] = useState(0); const [key, setKey] = useState(""); const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [position, setPosition] = useState(0);
-  const audio = useRef<HTMLAudioElement>(null); const demoUrl = useMemo(() => demo ? URL.createObjectURL(demo) : "", [demo]); const referenceUrl = useMemo(() => reference ? URL.createObjectURL(reference) : "", [reference]);
-  useEffect(() => () => { if (demoUrl) URL.revokeObjectURL(demoUrl); if (referenceUrl) URL.revokeObjectURL(referenceUrl); }, [demoUrl, referenceUrl]);
+  const audio = useRef<HTMLAudioElement>(null); const demoUrl = useObjectUrl(demo); const referenceUrl = useObjectUrl(reference);
   const choose = (setter: (f: File) => void) => (e: ChangeEvent<HTMLInputElement>) => { const f = e.target.files?.[0]; if (f) { setter(f); setReport(undefined); setError(""); } };
   const analyze = async () => { if (!demo || !midi) return; setBusy(true); setError(""); try { const [m, a] = await Promise.all([parseMidi(await midi.arrayBuffer()), analyzeAudioTonality(demo)]); setReport(m); setAudioResult(a); setBpm(a.bpm); setKey(a.key); } catch (e) { setError(e instanceof Error ? e.message : "Không thể phân tích tệp."); } finally { setBusy(false); } };
   if (report && audioResult) return <PianoReportView report={report} audioResult={audioResult} bpm={bpm} keyName={key} setBpm={setBpm} setKey={setKey} demoUrl={demoUrl} referenceUrl={referenceUrl} demoName={demo!.name} audio={audio} position={position} setPosition={setPosition} onNew={() => setReport(undefined)} />;
@@ -31,7 +41,9 @@ function FileTile({ title, detail, accept, file, onChange }: { title: string; de
 function PianoReportView({ report, audioResult, bpm, keyName, setBpm, setKey, demoUrl, referenceUrl, demoName, audio, position, setPosition, onNew }: { report: PianoReport; audioResult: { bpm: number; bpmConfidence: number; key: string; keyConfidence: number; duration: number }; bpm: number; keyName: string; setBpm: (n: number) => void; setKey: (s: string) => void; demoUrl: string; referenceUrl: string; demoName: string; audio: React.RefObject<HTMLAudioElement | null>; position: number; setPosition: (n: number) => void; onNew: () => void }) {
   const [source, setSource] = useState<"demo" | "reference">("demo");
   const [playerDuration, setPlayerDuration] = useState(audioResult.duration);
-  const changeSource = (next: "demo" | "reference") => { if (next === "reference" && !referenceUrl) return; setSource(next); if (audio.current) { const wasPlaying = !audio.current.paused; audio.current.src = next === "demo" ? demoUrl : referenceUrl; audio.current.currentTime = Math.min(position, audio.current.duration || position); if (wasPlaying) void audio.current.play(); } };
+  const resumeAfterLoad = useRef(false); const seekAfterLoad = useRef(0); const selectedUrl = source === "demo" ? demoUrl : referenceUrl;
+  const changeSource = (next: "demo" | "reference") => { if (next === source || (next === "reference" && !referenceUrl)) return; const player = audio.current; resumeAfterLoad.current = Boolean(player && !player.paused); seekAfterLoad.current = player?.currentTime ?? position; setSource(next); };
+  const loadedMetadata = (player: HTMLAudioElement) => { setPlayerDuration(player.duration); const nextPosition = Math.min(seekAfterLoad.current, player.duration || 0); player.currentTime = nextPosition; setPosition(nextPosition); if (resumeAfterLoad.current) void player.play(); resumeAfterLoad.current = false; };
   return <div className="content piano-report">
     <section className="piano-report-head"><div><p className="eyebrow">PIANO THƯ GIÃN · BÁO CÁO SÁNG TÁC</p><h1>{demoName}</h1><p>Các chỉ số minh bạch này chỉ hỗ trợ việc nghe và đánh giá, không phải kết luận khách quan.</p></div><div className="piano-score"><strong>{report.score}</strong><span>/ 100</span><small>ĐIỂM GIAI ĐIỆU</small></div><button onClick={onNew}>Đánh giá mới</button></section>
     <section className="piano-detection">
@@ -43,7 +55,7 @@ function PianoReportView({ report, audioResult, bpm, keyName, setBpm, setKey, de
     <section className="piano-chords"><header><h2>Dòng thời gian hợp âm</h2><b>{report.progression || "Chưa phát hiện vòng hợp âm ổn định"}</b></header><div>{report.chords.map((c, i) => <button key={`${c.start}-${i}`} style={{ flex: c.end - c.start }} onClick={() => { if (audio.current) audio.current.currentTime = c.start; }}><strong>{c.name}</strong><small>{c.roman} · {time(c.start)}</small></button>)}</div></section>
     <section className="piano-metrics"><header><h2>Chỉ số giai điệu</h2><span>Cách tính từng chỉ số</span></header><div>{report.metrics.map(m => <article key={m.label}><div><b>{m.label}</b><strong>{m.score}</strong></div><meter min="0" max="100" value={m.score} /><p>{m.explanation}</p></article>)}</div></section>
     <section className="piano-feedback"><div><h2>Nhận xét cho producer</h2><p>{producerFeedback(report)}</p><h3>Checklist khi nghe</h3><ul><li>Bạn có thể ngân nga mô-típ chính sau một lần nghe không?</li><li>Phần cuối mỗi câu nhạc có đủ khoảng trống để tạo cảm giác thư giãn không?</li><li>Đỉnh của mỗi đường nét giai điệu có tự nhiên thay vì ngẫu nhiên không?</li><li>Các nốt ngoài tông có tạo cảm giác được sử dụng có chủ đích không?</li><li>Kết câu cuối có tạo được cảm giác khép lại như mong muốn không?</li></ul></div><aside><b>Phạm vi đánh giá</b><p>Báo cáo này không đánh giá cân bằng tần số, độ rộng stereo, LUFS, compression, lựa chọn âm thanh, mixing hoặc mastering.</p></aside></section>
-    <div className="piano-player"><audio ref={audio} src={demoUrl} controls onLoadedMetadata={e => setPlayerDuration(e.currentTarget.duration)} onTimeUpdate={e => setPosition(e.currentTarget.currentTime)} /><div><button className={source === "demo" ? "active" : ""} onClick={() => changeSource("demo")}>Demo</button><button disabled={!referenceUrl} className={source === "reference" ? "active" : ""} onClick={() => changeSource("reference")}>Tham chiếu</button></div><span>{time(position)} / {time(playerDuration)}</span></div>
+    <div className="piano-player"><audio ref={audio} src={selectedUrl} controls onLoadedMetadata={e => loadedMetadata(e.currentTarget)} onTimeUpdate={e => setPosition(e.currentTarget.currentTime)} /><div><button className={source === "demo" ? "active" : ""} onClick={() => changeSource("demo")}>Demo</button><button disabled={!referenceUrl} className={source === "reference" ? "active" : ""} onClick={() => changeSource("reference")}>Tham chiếu</button></div><span>{time(position)} / {time(playerDuration)}</span></div>
   </div>;
 }
 function PianoRoll({ report, position }: { report: PianoReport; position: number }) { const min = Math.min(...report.notes.map(n => n.note)); const max = Math.max(...report.notes.map(n => n.note)); return <svg className="piano-roll" viewBox="0 0 1000 280" role="img" aria-label="Bản đồ nốt MIDI"><g className="roll-grid">{Array.from({ length: 13 }, (_, i) => <line key={i} x1={i * 1000 / 12} x2={i * 1000 / 12} y1="0" y2="280" />)}</g>{report.notes.map((n, i) => <rect key={i} x={n.start / report.duration * 1000} y={(max - n.note) / Math.max(1, max - min + 1) * 260} width={Math.max(2, n.duration / report.duration * 1000)} height={Math.max(3, 250 / (max - min + 1))} rx="2" />)}<line className="playhead" x1={position / report.duration * 1000} x2={position / report.duration * 1000} y1="0" y2="280" /></svg>; }
