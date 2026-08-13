@@ -7,6 +7,7 @@ import {
   PairAnalysis,
 } from "./audio-analysis";
 import { GlassButton } from "./components/GlassButton";
+import { PianoMode } from "./PianoMode";
 
 type Slot = "demo" | "reference";
 type View = "new" | "report";
@@ -55,6 +56,7 @@ async function copyText(text: string) {
 }
 
 export default function Home() {
+  const [reviewMode, setReviewMode] = useState<"sleep" | "piano">("sleep");
   const [demo, setDemo] = useState<SelectedAudio | null>(null);
   const [reference, setReference] = useState<SelectedAudio | null>(null);
   const [dragging, setDragging] = useState<Slot | null>(null);
@@ -137,8 +139,10 @@ export default function Home() {
 
   return (
     <main className={`app-shell ${view === "report" ? "report-view" : "new-view"}`}>
-      <AppHeader view={view} hasReport={Boolean(analysis)} onNew={() => setView("new")} onReport={() => analysis && setView("report")} />
+      <AppHeader mode={reviewMode} onMode={setReviewMode} view={view} hasReport={Boolean(analysis)} onNew={() => setView("new")} onReport={() => analysis && setView("report")} />
       <section className="workspace">
+        {reviewMode === "piano" ? <PianoMode /> :
+        <>
         {view === "new" ? (
           <UploadWorkspace
             demo={demo}
@@ -165,12 +169,13 @@ export default function Home() {
         ) : null}
 
         {analyzing ? <AnalysisProgress progress={progress.value} label={progress.label} /> : null}
+        </>}
       </section>
     </main>
   );
 }
 
-function AppHeader({ view, hasReport, onNew, onReport }: { view: View; hasReport: boolean; onNew: () => void; onReport: () => void }) {
+function AppHeader({ mode, onMode, view, hasReport, onNew, onReport }: { mode: "sleep" | "piano"; onMode: (mode: "sleep" | "piano") => void; view: View; hasReport: boolean; onNew: () => void; onReport: () => void }) {
   return (
     <header className="site-header">
       <div className="site-header-inner">
@@ -182,8 +187,12 @@ function AppHeader({ view, hasReport, onNew, onReport }: { view: View; hasReport
           </span>
         </button>
         <nav className="header-nav" aria-label="Primary navigation">
+          <GlassButton className={mode === "sleep" ? "active" : ""} size="default" variant="secondary" type="button" onClick={() => onMode("sleep")}>Deep Sleep</GlassButton>
+          <GlassButton className={mode === "piano" ? "active" : ""} size="default" variant="secondary" type="button" onClick={() => onMode("piano")}>Piano thư giãn</GlassButton>
+          {mode === "sleep" ? <>
           <GlassButton className={`header-new-analysis ${view === "new" ? "active" : ""}`} size="default" variant="secondary" type="button" onClick={onNew} aria-current={view === "new" ? "page" : undefined}>New Analysis</GlassButton>
           <GlassButton className={`header-report-button ${view === "report" ? "active" : ""}`} size="default" variant="secondary" type="button" disabled={!hasReport} onClick={onReport} aria-current={view === "report" ? "page" : undefined}>Analysis Report</GlassButton>
+          </> : null}
         </nav>
       </div>
     </header>
