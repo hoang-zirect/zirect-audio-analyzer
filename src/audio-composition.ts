@@ -68,12 +68,30 @@ export function estimateTempo(envelope: number[], frameSeconds: number): TempoEs
   return { bpm:selected.bpm, stability, confidence:level, candidates, ambiguous:harmonicClose };
 }
 
-/** Equal-weight mono downmix. Every decoded channel contributes to composition analysis. */
+/**
+ * Phase-safe mono representation for feature extraction.
+ *
+ * A plain L+R average can turn an audible opposite-polarity stereo file into
+ * silence. Keep the average when channels agree, otherwise preserve RMS energy
+ * with the sign of the dominant channel. This is for analysis only and never
+ * replaces the user's audio playback.
+ */
 export function downmixChannels(channels: Float32Array[]): Float32Array {
   if (!channels.length) return new Float32Array();
   const length = Math.min(...channels.map(channel => channel.length));
   const mono = new Float32Array(length);
-  for (let i = 0; i < length; i++) for (const channel of channels) mono[i] += channel[i] / channels.length;
+  for (let i = 0; i < length; i++) {
+    let sum = 0, squareSum = 0, dominant = 0;
+    for (const channel of channels) {
+      const sample = channel[i];
+      sum += sample;
+      squareSum += sample * sample;
+      if (Math.abs(sample) > Math.abs(dominant)) dominant = sample;
+    }
+    const average = sum / channels.length;
+    const rms = Math.sqrt(squareSum / channels.length);
+    mono[i] = Math.abs(average) >= rms * .2 ? average : Math.sign(dominant || 1) * rms;
+  }
   return mono;
 }
 
@@ -103,9 +121,31 @@ export function analyzeCompositionSamples(data: Float32Array, sampleRate: number
 
 export async function analyzeCompositionAudio(file: File): Promise<CompositionAnalysis> { const context=new AudioContext(); try { const buffer=await context.decodeAudioData(await file.arrayBuffer()); return analyzeCompositionSamples(downmixChannels(Array.from({length:buffer.numberOfChannels},(_,i)=>buffer.getChannelData(i))),buffer.sampleRate); } finally { await context.close(); } }
 
+const sectionKeys: Array<keyof Omit<CompositionSection, "start" | "end">> = ["onsetDensity", "restPercent", "longestRest", "phraseLength", "repetition", "melodicMovement", "harmonicChangeRate", "activity"];
+
+/** Resample a track into equal normalized bins without omitting any time range. */
+export function resampleCompositionSections(analysis: CompositionAnalysis, count = 8): CompositionSection[] {
+  return Array.from({ length: count }, (_, index) => {
+    const start = index / count * analysis.duration;
+    const end = (index + 1) / count * analysis.duration;
+    const overlaps = analysis.sections.map(section => ({
+      section,
+      weight: Math.max(0, Math.min(end, section.end) - Math.max(start, section.start)),
+    })).filter(item => item.weight > 0);
+    const totalWeight = overlaps.reduce((sum, item) => sum + item.weight, 0) || 1;
+    const values = Object.fromEntries(sectionKeys.map(key => {
+      if (key === "longestRest") return [key, round(Math.max(0, ...overlaps.map(item => item.section.longestRest)))];
+      return [key, round(overlaps.reduce((sum, item) => sum + Number(item.section[key]) * item.weight, 0) / totalWeight)];
+    })) as Omit<CompositionSection, "start" | "end">;
+    return { start, end, ...values };
+  });
+}
+
 export function compareCompositions(demo: CompositionAnalysis, reference: CompositionAnalysis): CompositionComparison {
-  const row=(label:string,key:keyof CompositionSection,unit:string)=>({label,demo:round(mean(demo.sections.map(s=>Number(s[key])))),reference:round(mean(reference.sections.map(s=>Number(s[key])))),unit});
-  const rows=[row("Mật độ piano/onset","onsetDensity","/phút"),row("Thời gian nghỉ","restPercent","%"),row("Độ dài câu","phraseLength","s"),{label:"Tempo / rubato",demo:demo.bpm,reference:reference.bpm,unit:"BPM"},row("Lặp motif","repetition","%"),row("Đổi hoà âm ước lượng","harmonicChangeRate","/phút"),{label:"Intro / outro",demo:round(demo.introSilence+demo.outroSilence),reference:round(reference.introSilence+reference.outroSilence),unit:"s"},row("Chuyển động giai điệu","melodicMovement","")];
-  const count=Math.min(demo.sections.length,reference.sections.length); const findings=Array.from({length:count},(_,i)=>{const d=demo.sections[Math.floor(i/count*demo.sections.length)],r=reference.sections[Math.floor(i/count*reference.sections.length)];const densityPct=r.onsetDensity?round((d.onsetDensity-r.onsetDensity)/r.onsetDensity*100):round(d.onsetDensity?100:0);const diffs=[Math.abs(densityPct)/50,Math.abs(d.restPercent-r.restPercent)/25,Math.abs(d.phraseLength-r.phraseLength)/5,Math.abs(d.repetition-r.repetition)/25,Math.abs(d.harmonicChangeRate-r.harmonicChangeRate)/20,Math.abs(d.melodicMovement-r.melodicMovement)/25];const score=round(mean(diffs),2);const busy=densityPct>=0?`${Math.abs(densityPct)}% cao hơn`:`${Math.abs(densityPct)}% thấp hơn`;return{id:`comparison-${i}`,rank:0,demoStart:d.start,demoEnd:d.end,referenceStart:r.start,referenceEnd:r.end,score,textVi:`${formatTime(d.start)}–${formatTime(d.end)}: Demo có mật độ sự kiện piano ${busy} và khoảng nghỉ dài nhất ${d.longestRest<r.longestRest?"ngắn hơn":"dài hơn"} Reference ở đoạn tương đương. Nghe lại để kiểm tra giai điệu có quá bận hay thiếu chuyển động không.`,textEn:`${formatTime(d.start)}–${formatTime(d.end)}: Demo piano-event density is ${Math.abs(densityPct)}% ${densityPct>=0?"higher":"lower"}, with a ${d.longestRest<r.longestRest?"shorter":"longer"} longest pause than the equivalent Reference section. Listen again for pacing and melodic space.`};}).sort((a,b)=>b.score-a.score).map((f,i)=>({...f,rank:i+1})); return {rows,findings};
+  const demoBins = resampleCompositionSections(demo);
+  const referenceBins = resampleCompositionSections(reference);
+  const row=(label:string,key:keyof CompositionSection,unit:string)=>({label,demo:round(mean(demoBins.map(s=>Number(s[key])))),reference:round(mean(referenceBins.map(s=>Number(s[key])))),unit});
+  const rows=[row("Mật độ tiếng đàn","onsetDensity","/phút"),row("Thời gian nghỉ ước lượng","restPercent","%"),row("Độ dài câu ước lượng","phraseLength","s"),{label:"BPM đã xác nhận",demo:demo.bpm,reference:reference.bpm,unit:"BPM"},row("Lặp mẫu nhịp onset","repetition","%"),row("Biến đổi màu âm","harmonicChangeRate","/phút"),{label:"Intro / outro",demo:round(demo.introSilence+demo.outroSilence),reference:round(reference.introSilence+reference.outroSilence),unit:"s"},row("Biến động onset/năng lượng","melodicMovement","")];
+  const findings=demoBins.map((d,i)=>{const r=referenceBins[i];const densityPct=r.onsetDensity?round((d.onsetDensity-r.onsetDensity)/r.onsetDensity*100):round(d.onsetDensity?100:0);const diffs=[Math.abs(densityPct)/50,Math.abs(d.restPercent-r.restPercent)/25,Math.abs(d.phraseLength-r.phraseLength)/5,Math.abs(d.repetition-r.repetition)/25,Math.abs(d.harmonicChangeRate-r.harmonicChangeRate)/20,Math.abs(d.melodicMovement-r.melodicMovement)/25];const score=round(mean(diffs),2);const busy=densityPct>=0?`${Math.abs(densityPct)}% cao hơn`:`${Math.abs(densityPct)}% thấp hơn`;return{id:`comparison-${i}`,rank:0,demoStart:d.start,demoEnd:d.end,referenceStart:r.start,referenceEnd:r.end,score,textVi:`${formatTime(d.start)}–${formatTime(d.end)}: Demo có mật độ tiếng đàn ${busy} và khoảng nghỉ dài nhất ${d.longestRest<r.longestRest?"ngắn hơn":"dài hơn"} Reference ở đoạn tương đương. Nghe lại để xác nhận cảm giác dày/thưa bằng tai.`,textEn:`${formatTime(d.start)}–${formatTime(d.end)}: Demo piano-event density is ${Math.abs(densityPct)}% ${densityPct>=0?"higher":"lower"}, with a ${d.longestRest<r.longestRest?"shorter":"longer"} longest pause than the equivalent Reference section. Confirm the pacing difference by ear.`};}).sort((a,b)=>b.score-a.score).map((f,i)=>({...f,rank:i+1})); return {rows,findings};
 }
 const formatTime=(s:number)=>`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`;
