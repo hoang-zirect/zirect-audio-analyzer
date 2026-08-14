@@ -8,6 +8,7 @@ export type CompositionSection = {
 
 export type CompositionAnalysis = {
   duration: number; waveform: number[]; bpm: number; tempoStability: number; rubato: number;
+  tempoCandidates: Array<{ bpm: number; score: number }>; tempoAmbiguous: boolean;
   tonalCenter: string; onsetDensity: number; restPercent: number; longestRest: number;
   averagePhraseLength: number; introSilence: number; outroSilence: number; repetition: number;
   melodicMovement: number; harmonicChangeRate: number; activityPercent: number;
@@ -20,6 +21,52 @@ const NAMES = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B�
 const mean = (a: number[]) => a.reduce((s, n) => s + n, 0) / Math.max(1, a.length);
 const round = (n: number, p = 1) => Number(n.toFixed(p));
 const confidence = (events: number, duration: number): ConfidenceLabel => events >= Math.max(12, duration / 3) ? "High" : events >= 4 ? "Medium" : "Low";
+
+type TempoEstimate = { bpm: number; stability: number; confidence: ConfidenceLabel; candidates: Array<{ bpm: number; score: number }>; ambiguous: boolean };
+const correlationAt = (values: number[], lag: number) => {
+  const rounded = Math.max(1, Math.round(lag)); let xy = 0, xx = 0, yy = 0;
+  for (let i = rounded; i < values.length; i++) { const x = values[i], y = values[i - rounded]; xy += x * y; xx += x * x; yy += y * y; }
+  return xy / Math.max(1e-9, Math.sqrt(xx * yy));
+};
+
+/** Tempo from onset strength, using normalized autocorrelation, a harmonic comb and window agreement. */
+export function estimateTempo(envelope: number[], frameSeconds: number): TempoEstimate {
+  const duration = envelope.length * frameSeconds; const total = envelope.reduce((sum, value) => sum + value, 0);
+  if (duration < 2 || total < 1e-5) return { bpm: 0, stability: 0, confidence: "Low", candidates: [], ambiguous: false };
+  const scoreRange = (values: number[]) => Array.from({ length: 146 }, (_, index) => 35 + index).map(bpm => {
+    const lag = 60 / bpm / frameSeconds;
+    const autocorrelation = correlationAt(values, lag);
+    const comb = autocorrelation + .38 * correlationAt(values, lag * 2) + .18 * correlationAt(values, lag * 3);
+    return { bpm, raw: comb / 1.56 };
+  });
+  const global = scoreRange(envelope); const peakCandidates = global.filter((candidate, index, all) => candidate.raw >= (all[index - 1]?.raw ?? -1) && candidate.raw >= (all[index + 1]?.raw ?? -1)).sort((a,b)=>b.raw-a.raw);
+  const strongest = peakCandidates[0] ?? { bpm: 0, raw: 0 };
+  // Perfect pulse trains correlate at every integer multiple. Start with the fastest
+  // comparably-supported peak, then step down only when alternating accents justify it.
+  let selected = peakCandidates.filter(candidate=>candidate.raw>=strongest.raw*.97).sort((a,b)=>b.bpm-a.bpm)[0] ?? strongest;
+  // Resolve half/double ambiguity through alternating accent strength. A real subdivision pattern
+  // has materially stronger odd/even accents; an unaccented 120 BPM beat therefore stays at 120.
+  const half = peakCandidates.find(candidate => Math.abs(candidate.bpm * 2 - selected.bpm) <= 3 && candidate.bpm <= 90);
+  if (half && half.raw >= selected.raw * .82) {
+    const fastLag = Math.max(1, Math.round(60 / selected.bpm / frameSeconds)); const pulses: number[] = [];
+    for (let offset = 0; offset < fastLag; offset++) { const sampled = envelope.filter((_, index) => index % fastLag === offset); pulses.push(mean(sampled)); }
+    const phase = pulses.indexOf(Math.max(...pulses)); const accents: number[] = [];
+    for (let index = phase; index < envelope.length; index += fastLag) accents.push(envelope[index]);
+    const even = mean(accents.filter((_, index) => index % 2 === 0)), odd = mean(accents.filter((_, index) => index % 2 === 1));
+    const accentRatio = Math.max(even, odd) / Math.max(1e-6, Math.min(even, odd));
+    if (accentRatio >= 1.22 || half.raw > selected.raw * 1.06) selected = half;
+  }
+  const windowFrames = Math.max(Math.round(12 / frameSeconds), Math.round(4 * 60 / Math.max(35, selected.bpm) / frameSeconds)); const windowBpms: number[] = [];
+  for (let start = 0; start + windowFrames <= envelope.length; start += Math.max(1, Math.floor(windowFrames / 2))) { const local = scoreRange(envelope.slice(start,start+windowFrames)).sort((a,b)=>b.raw-a.raw); const related = local.filter(candidate => candidate.bpm >= selected.bpm * .72 && candidate.bpm <= selected.bpm * 1.38)[0]; if (related) windowBpms.push(related.bpm); }
+  const agreement = windowBpms.length ? windowBpms.filter(bpm=>Math.abs(bpm-selected.bpm)<=Math.max(3,selected.bpm*.07)).length/windowBpms.length : .4;
+  const spread = windowBpms.length ? Math.sqrt(mean(windowBpms.map(bpm=>(bpm-selected.bpm)**2))) / selected.bpm : .35; const stability = round(Math.max(0, Math.min(100, 100 - spread * 180)));
+  const candidates = peakCandidates.filter((candidate,index,all)=>index===0||all.slice(0,index).every(other=>Math.abs(other.bpm-candidate.bpm)>4)).slice(0,3).map(candidate=>({bpm:candidate.bpm,score:round(candidate.raw*100)}));
+  const runnerUp = peakCandidates.find(candidate=>Math.abs(candidate.bpm-selected.bpm)>4); const dominance = selected.raw / Math.max(.001,runnerUp?.raw ?? selected.raw*.5);
+  const harmonicClose = peakCandidates.some(candidate => candidate.bpm !== selected.bpm && (Math.abs(candidate.bpm-selected.bpm*2)<=3 || Math.abs(candidate.bpm*2-selected.bpm)<=3) && candidate.raw>=selected.raw*.82);
+  const quality = (Math.min(1,(dominance-1)/.35)*.35 + agreement*.35 + Math.min(1,duration/30)*.15 + stability/100*.15);
+  let level: ConfidenceLabel = quality >= .72 ? "High" : quality >= .43 ? "Medium" : "Low"; if (stability < 60 || harmonicClose) level = level === "High" ? "Medium" : level;
+  return { bpm:selected.bpm, stability, confidence:level, candidates, ambiguous:harmonicClose };
+}
 
 /** Equal-weight mono downmix. Every decoded channel contributes to composition analysis. */
 export function downmixChannels(channels: Float32Array[]): Float32Array {
@@ -37,8 +84,7 @@ export function analyzeCompositionSamples(data: Float32Array, sampleRate: number
   const peak = Math.max(...energy, 1e-8); const activeThreshold = Math.max(peak * .08, .0005); const active = energy.map(e => e > activeThreshold);
   const sortedFlux = [...flux].sort((a,b)=>a-b); const onsetThreshold = sortedFlux[Math.floor(sortedFlux.length * .82)] ?? 0;
   const onsets = flux.map((v,i) => v > onsetThreshold && v > (flux[i-1] ?? 0) * 1.08 && active[i] ? i * frameSeconds : -1).filter(v => v >= 0);
-  const intervals = onsets.slice(1).map((v,i)=>v-onsets[i]).filter(v=>v>.18&&v<2.1); const median = [...intervals].sort((a,b)=>a-b)[Math.floor(intervals.length/2)] || 1;
-  const bpm = intervals.length ? Math.round(60 / median) : 0; const deviation = intervals.length ? Math.sqrt(mean(intervals.map(v=>(v-median)**2))) / median : 1;
+  const onsetEnvelope = flux.map((value, index) => active[index] ? Math.max(0, value - (flux[index - 1] ?? 0) * .35) : 0); const tempo = estimateTempo(onsetEnvelope, frameSeconds);
   const rests: Array<{start:number;end:number}> = []; let restStart = -1; active.forEach((v,i)=>{if(!v&&restStart<0)restStart=i; if(v&&restStart>=0){rests.push({start:restStart*frameSeconds,end:i*frameSeconds});restStart=-1;}}); if(restStart>=0)rests.push({start:restStart*frameSeconds,end:duration});
   const phraseRests = rests.filter(r=>r.end-r.start>=.45); const phraseStarts=[0,...phraseRests.map(r=>r.end)].filter(v=>v<duration); const phraseEnds=[...phraseRests.map(r=>r.start),duration]; const phrases=phraseStarts.map((v,i)=>Math.max(0,(phraseEnds[i]??duration)-v)).filter(v=>v>.15);
   const introSilence = rests[0]?.start === 0 ? rests[0].end : 0; const last = rests.at(-1); const outroSilence = last && Math.abs(last.end-duration)<.1 ? duration-last.start : 0;
@@ -52,7 +98,7 @@ export function analyzeCompositionSamples(data: Float32Array, sampleRate: number
   const waveform=Array.from({length:180},(_,i)=>Math.max(0,...energy.slice(Math.floor(i*energy.length/180),Math.max(Math.floor(i*energy.length/180)+1,Math.floor((i+1)*energy.length/180))))/peak);
   // Tonal center uses autocorrelation-like sinusoidal projections over a bounded sample.
   const chroma=Array(12).fill(0); const stride=Math.max(1,Math.floor(data.length/60000)); for(let midi=36;midi<=83;midi++){const freq=440*2**((midi-69)/12);let re=0,im=0;for(let i=0;i<data.length;i+=stride){const p=2*Math.PI*freq*i/sampleRate;re+=data[i]*Math.cos(p);im-=data[i]*Math.sin(p);}chroma[midi%12]+=Math.hypot(re,im);} const tonic=chroma.indexOf(Math.max(...chroma)); const c=confidence(onsets.length,duration);
-  return {duration, waveform, bpm, tempoStability:round(Math.max(0,100-deviation*100)),rubato:round(Math.min(100,deviation*100)),tonalCenter:peak<.001?"Không xác định":NAMES[tonic],onsetDensity:round(onsets.length/Math.max(duration/60,1/60)),restPercent:round(active.filter(v=>!v).length/Math.max(1,active.length)*100),longestRest:round(Math.max(0,...rests.map(r=>r.end-r.start))),averagePhraseLength:round(mean(phrases)),introSilence:round(introSilence),outroSilence:round(outroSilence),repetition:round(motifMatches/Math.max(1,motifBins.length)*100),melodicMovement:round(movement*100),harmonicChangeRate:round(harmonicChanges),activityPercent:round(active.filter(Boolean).length/Math.max(1,active.length)*100),sections,confidence:{tempo:c,rubato:c,tonalCenter:peak>.01?"Medium":"Low",onsets:c,phrasing:phraseRests.length>=2?"High":phraseRests.length?"Medium":"Low",repetition:onsets.length>=16?"Medium":"Low",melodicMovement:c,harmonicChange:c,sections:duration>=30?"High":"Medium"}};
+  return {duration, waveform, bpm:tempo.bpm, tempoStability:tempo.stability,rubato:round(100-tempo.stability),tempoCandidates:tempo.candidates,tempoAmbiguous:tempo.ambiguous,tonalCenter:peak<.001?"Không xác định":NAMES[tonic],onsetDensity:round(onsets.length/Math.max(duration/60,1/60)),restPercent:round(active.filter(v=>!v).length/Math.max(1,active.length)*100),longestRest:round(Math.max(0,...rests.map(r=>r.end-r.start))),averagePhraseLength:round(mean(phrases)),introSilence:round(introSilence),outroSilence:round(outroSilence),repetition:round(motifMatches/Math.max(1,motifBins.length)*100),melodicMovement:round(movement*100),harmonicChangeRate:round(harmonicChanges),activityPercent:round(active.filter(Boolean).length/Math.max(1,active.length)*100),sections,confidence:{tempo:tempo.confidence,rubato:tempo.confidence,tonalCenter:peak>.01?"Medium":"Low",onsets:c,phrasing:phraseRests.length>=2?"High":phraseRests.length?"Medium":"Low",repetition:onsets.length>=16?"Medium":"Low",melodicMovement:c,harmonicChange:c,sections:duration>=30?"High":"Medium"}};
 }
 
 export async function analyzeCompositionAudio(file: File): Promise<CompositionAnalysis> { const context=new AudioContext(); try { const buffer=await context.decodeAudioData(await file.arrayBuffer()); return analyzeCompositionSamples(downmixChannels(Array.from({length:buffer.numberOfChannels},(_,i)=>buffer.getChannelData(i))),buffer.sampleRate); } finally { await context.close(); } }
