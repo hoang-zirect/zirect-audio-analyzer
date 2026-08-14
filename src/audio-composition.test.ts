@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyzeCompositionSamples, compareCompositions, downmixChannels, type CompositionAnalysis } from "./audio-composition";
+import { analyzeCompositionSamples, compareCompositions, downmixChannels, reconcileTempoEstimates, type CompositionAnalysis, type ZirectTempoSource } from "./audio-composition";
 const pulse=(seconds=12,sr=1000)=>{const a=new Float32Array(seconds*sr);for(let p=500;p<a.length;p+=500)for(let i=p;i<Math.min(p+20,a.length);i++)a[i]=.8;return a};
 describe("audio composition analysis",()=>{
  it("preserves audible energy when stereo channels have opposite polarity",()=>expect(Array.from(downmixChannels([new Float32Array([1,-1]),new Float32Array([-1,1])]))).toEqual([1,-1]));
@@ -16,4 +16,12 @@ describe("robust musical tempo",()=>{
  it("preserves a genuine clear 120 BPM pulse",()=>{const bpm=analyzeCompositionSamples(tempoSignal(120),1000).bpm;expect(bpm).toBeGreaterThanOrEqual(116);expect(bpm).toBeLessThanOrEqual(124)});
  it("returns unknown and Low confidence for silence",()=>{const r=analyzeCompositionSamples(new Float32Array(10000),1000);expect(r.bpm).toBe(0);expect(r.confidence.tempo).toBe("Low")});
  it("never reports High confidence below 60% stability",()=>{const r=analyzeCompositionSamples(tempoSignal(55,16,true,true),1000);if(r.tempoStability<60)expect(r.confidence.tempo).not.toBe("High")});
+});
+
+const zirectTempo = (bpm: number): ZirectTempoSource => ({ bpm, confidence: "High", candidates: [{ bpm, score: 90 }], ambiguous: false });
+describe("Zirect + Essentia tempo cross-check", () => {
+ it("treats nearby estimates as agreement",()=>{const result=reconcileTempoEstimates(zirectTempo(55),{bpm:56,confidence:2.4,candidates:[56]});expect(result.status).toBe("agreement");expect(result.recommendedBpm).toBe(56);expect(result.needsConfirmation).toBe(false)});
+ it("prefers the slow Piano Relaxing level for a half/double pair",()=>{const result=reconcileTempoEstimates(zirectTempo(55),{bpm:110,confidence:2,candidates:[110,55]});expect(result.status).toBe("half-double");expect(result.recommendedBpm).toBe(55);expect(result.needsConfirmation).toBe(true)});
+ it("keeps disagreement visible instead of averaging unrelated tempos",()=>{const result=reconcileTempoEstimates(zirectTempo(55),{bpm:84,confidence:1,candidates:[84]});expect(result.status).toBe("conflict");expect(result.recommendedBpm).toBe(55);expect(result.message).toContain("chênh lệch rõ")});
+ it("falls back to Zirect when Essentia is unavailable",()=>{const result=reconcileTempoEstimates(zirectTempo(55),undefined,"WASM failed");expect(result.status).toBe("zirect-only");expect(result.recommendedBpm).toBe(55);expect(result.essentiaError).toBe("WASM failed")});
 });

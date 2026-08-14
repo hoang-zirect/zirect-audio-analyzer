@@ -1,4 +1,4 @@
-import { resampleCompositionSections, type CompositionAnalysis, type CompositionSection } from "./audio-composition";
+import { resampleCompositionSections, type CompositionAnalysis, type CompositionSection, type TempoCrossCheckStatus } from "./audio-composition";
 import type { PianoTranscription, PianoTranscriptionSummary, TranscriptionSection } from "./piano-transcription";
 
 export const REFERENCE_PROFILE_SCHEMA = "zirect-piano-reference/1";
@@ -9,6 +9,7 @@ export const MAXIMUM_REFERENCE_TRACKS = 30;
 export type StoredCompositionFeatures = {
   duration: number;
   confirmedBpm: number;
+  tempoSources?: { zirectBpm: number; essentiaBpm?: number; status: TempoCrossCheckStatus };
   onsetDensity: number;
   restPercent: number;
   longestRest: number;
@@ -135,6 +136,11 @@ function storedComposition(analysis: CompositionAnalysis, confirmedBpm = analysi
   return {
     duration: round(analysis.duration, 3),
     confirmedBpm,
+    tempoSources: analysis.tempoCrossCheck ? {
+      zirectBpm: analysis.tempoCrossCheck.zirect.bpm,
+      essentiaBpm: analysis.tempoCrossCheck.essentia?.bpm,
+      status: analysis.tempoCrossCheck.status,
+    } : undefined,
     onsetDensity: analysis.onsetDensity,
     restPercent: analysis.restPercent,
     longestRest: analysis.longestRest,

@@ -10,6 +10,9 @@ Chế độ Piano Relaxing có thể tạo **Zirect Piano Reference Profile** t�
 - Hồ sơ trong `localStorage` chỉ chứa BPM đã xác nhận và các đặc trưng tổng hợp; không chứa audio, waveform hay chuỗi nốt thô.
 - Có thể xuất/nhập hồ sơ dưới dạng JSON để sao lưu hoặc chuyển trình duyệt.
 - AI audio-to-note dùng [Spotify Basic Pitch TypeScript](https://github.com/spotify/basic-pitch-ts) để ước lượng top-voice. Đây không phải MIDI chính xác và điểm “phù hợp hồ sơ” không phải điểm chất lượng.
+- BPM audio được đối chiếu giữa bộ đo Zirect và [Essentia.js](https://mtg.github.io/essentia.js/). Essentia chạy trong Web Worker; quan hệ nửa/gấp đôi và các kết quả xung đột luôn được hiển thị để người nghe xác nhận thủ công.
+
+`essentia.js` được phân phối theo giấy phép AGPL-3.0; cần giữ việc phân phối và triển khai dự án phù hợp với giấy phép của dependency này.
 
 ## Chạy trên máy
 

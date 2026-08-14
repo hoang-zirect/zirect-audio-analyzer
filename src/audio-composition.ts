@@ -1,4 +1,25 @@
+import { analyzeEssentiaTempo, type EssentiaTempoEstimate } from "./essentia-tempo";
+
 export type ConfidenceLabel = "Low" | "Medium" | "High";
+
+export type ZirectTempoSource = {
+  bpm: number;
+  confidence: ConfidenceLabel;
+  candidates: Array<{ bpm: number; score: number }>;
+  ambiguous: boolean;
+};
+
+export type TempoCrossCheckStatus = "agreement" | "half-double" | "conflict" | "zirect-only" | "essentia-only" | "unavailable";
+
+export type TempoCrossCheck = {
+  zirect: ZirectTempoSource;
+  essentia?: EssentiaTempoEstimate;
+  essentiaError?: string;
+  recommendedBpm: number;
+  status: TempoCrossCheckStatus;
+  needsConfirmation: boolean;
+  message: string;
+};
 
 export type CompositionSection = {
   start: number; end: number; onsetDensity: number; restPercent: number;
@@ -9,6 +30,7 @@ export type CompositionSection = {
 export type CompositionAnalysis = {
   duration: number; waveform: number[]; bpm: number; tempoStability: number; rubato: number;
   tempoCandidates: Array<{ bpm: number; score: number }>; tempoAmbiguous: boolean;
+  tempoCrossCheck?: TempoCrossCheck;
   tonalCenter: string; onsetDensity: number; restPercent: number; longestRest: number;
   averagePhraseLength: number; introSilence: number; outroSilence: number; repetition: number;
   melodicMovement: number; harmonicChangeRate: number; activityPercent: number;
@@ -68,6 +90,53 @@ export function estimateTempo(envelope: number[], frameSeconds: number): TempoEs
   return { bpm:selected.bpm, stability, confidence:level, candidates, ambiguous:harmonicClose };
 }
 
+const validBpm = (value?: number) => Number.isFinite(value) && Number(value) >= 30 && Number(value) <= 220;
+
+/**
+ * Reconcile two independent tempo engines without hiding disagreement.
+ * Piano Relaxing uses the slower metrical level for a clear half/double pair,
+ * while still requiring the reviewer to confirm it by ear.
+ */
+export function reconcileTempoEstimates(zirect: ZirectTempoSource, essentia?: EssentiaTempoEstimate, essentiaError?: string): TempoCrossCheck {
+  const zirectValid = validBpm(zirect.bpm), essentiaValid = validBpm(essentia?.bpm);
+  if (!zirectValid && !essentiaValid) return {
+    zirect, essentia, essentiaError, recommendedBpm: 0, status: "unavailable", needsConfirmation: true,
+    message: "Cả hai bộ đo chưa tìm được BPM ổn định. Hãy nhập BPM thủ công.",
+  };
+  if (!essentiaValid) return {
+    zirect, essentia, essentiaError, recommendedBpm: Math.round(zirect.bpm), status: "zirect-only", needsConfirmation: zirect.ambiguous,
+    message: essentiaError ? "Essentia chưa khả dụng; kết quả đang dùng riêng bộ đo Zirect." : "Chưa có kết quả Essentia; kết quả đang dùng riêng bộ đo Zirect.",
+  };
+  if (!zirectValid) return {
+    zirect, essentia, essentiaError, recommendedBpm: Math.round(essentia!.bpm), status: "essentia-only", needsConfirmation: true,
+    message: "Bộ đo Zirect chưa tìm được nhịp; tạm dùng kết quả Essentia và cần xác nhận bằng tai.",
+  };
+
+  const zirectBpm = zirect.bpm, essentiaBpm = essentia!.bpm;
+  const difference = Math.abs(zirectBpm - essentiaBpm);
+  if (difference <= Math.max(3, Math.min(zirectBpm, essentiaBpm) * .05)) {
+    const recommendedBpm = Math.round((zirectBpm + essentiaBpm) / 2);
+    return {
+      zirect, essentia, recommendedBpm, status: "agreement", needsConfirmation: false,
+      message: `Hai bộ đo đồng thuận quanh ${recommendedBpm} BPM.`,
+    };
+  }
+
+  const slower = Math.min(zirectBpm, essentiaBpm), faster = Math.max(zirectBpm, essentiaBpm);
+  if (Math.abs(faster - slower * 2) <= Math.max(4, slower * .06)) {
+    const recommendedBpm = Math.round(slower);
+    return {
+      zirect, essentia, recommendedBpm, status: "half-double", needsConfirmation: true,
+      message: `Phát hiện quan hệ nửa/gấp đôi ${Math.round(slower)} ↔ ${Math.round(faster)} BPM. Đề xuất ${recommendedBpm} BPM cho Piano Relaxing; hãy xác nhận bằng tai.`,
+    };
+  }
+
+  return {
+    zirect, essentia, recommendedBpm: Math.round(zirectBpm), status: "conflict", needsConfirmation: true,
+    message: `Hai bộ đo chênh lệch rõ (${Math.round(zirectBpm)} và ${Math.round(essentiaBpm)} BPM). Chưa thể tự kết luận; hãy nhập BPM đã kiểm tra bằng tai.`,
+  };
+}
+
 /**
  * Phase-safe mono representation for feature extraction.
  *
@@ -116,10 +185,65 @@ export function analyzeCompositionSamples(data: Float32Array, sampleRate: number
   const waveform=Array.from({length:180},(_,i)=>Math.max(0,...energy.slice(Math.floor(i*energy.length/180),Math.max(Math.floor(i*energy.length/180)+1,Math.floor((i+1)*energy.length/180))))/peak);
   // Tonal center uses autocorrelation-like sinusoidal projections over a bounded sample.
   const chroma=Array(12).fill(0); const stride=Math.max(1,Math.floor(data.length/60000)); for(let midi=36;midi<=83;midi++){const freq=440*2**((midi-69)/12);let re=0,im=0;for(let i=0;i<data.length;i+=stride){const p=2*Math.PI*freq*i/sampleRate;re+=data[i]*Math.cos(p);im-=data[i]*Math.sin(p);}chroma[midi%12]+=Math.hypot(re,im);} const tonic=chroma.indexOf(Math.max(...chroma)); const c=confidence(onsets.length,duration);
-  return {duration, waveform, bpm:tempo.bpm, tempoStability:tempo.stability,rubato:round(100-tempo.stability),tempoCandidates:tempo.candidates,tempoAmbiguous:tempo.ambiguous,tonalCenter:peak<.001?"Không xác định":NAMES[tonic],onsetDensity:round(onsets.length/Math.max(duration/60,1/60)),restPercent:round(active.filter(v=>!v).length/Math.max(1,active.length)*100),longestRest:round(Math.max(0,...rests.map(r=>r.end-r.start))),averagePhraseLength:round(mean(phrases)),introSilence:round(introSilence),outroSilence:round(outroSilence),repetition:round(motifMatches/Math.max(1,motifBins.length)*100),melodicMovement:round(movement*100),harmonicChangeRate:round(harmonicChanges),activityPercent:round(active.filter(Boolean).length/Math.max(1,active.length)*100),sections,confidence:{tempo:tempo.confidence,rubato:tempo.confidence,tonalCenter:peak>.01?"Medium":"Low",onsets:c,phrasing:phraseRests.length>=2?"High":phraseRests.length?"Medium":"Low",repetition:onsets.length>=16?"Medium":"Low",melodicMovement:c,harmonicChange:c,sections:duration>=30?"High":"Medium"}};
+  const zirectTempo: ZirectTempoSource = { bpm: tempo.bpm, confidence: tempo.confidence, candidates: tempo.candidates, ambiguous: tempo.ambiguous };
+  return {duration, waveform, bpm:tempo.bpm, tempoStability:tempo.stability,rubato:round(100-tempo.stability),tempoCandidates:tempo.candidates,tempoAmbiguous:tempo.ambiguous,tempoCrossCheck:reconcileTempoEstimates(zirectTempo),tonalCenter:peak<.001?"Không xác định":NAMES[tonic],onsetDensity:round(onsets.length/Math.max(duration/60,1/60)),restPercent:round(active.filter(v=>!v).length/Math.max(1,active.length)*100),longestRest:round(Math.max(0,...rests.map(r=>r.end-r.start))),averagePhraseLength:round(mean(phrases)),introSilence:round(introSilence),outroSilence:round(outroSilence),repetition:round(motifMatches/Math.max(1,motifBins.length)*100),melodicMovement:round(movement*100),harmonicChangeRate:round(harmonicChanges),activityPercent:round(active.filter(Boolean).length/Math.max(1,active.length)*100),sections,confidence:{tempo:tempo.confidence,rubato:tempo.confidence,tonalCenter:peak>.01?"Medium":"Low",onsets:c,phrasing:phraseRests.length>=2?"High":phraseRests.length?"Medium":"Low",repetition:onsets.length>=16?"Medium":"Low",melodicMovement:c,harmonicChange:c,sections:duration>=30?"High":"Medium"}};
 }
 
-export async function analyzeCompositionAudio(file: File): Promise<CompositionAnalysis> { const context=new AudioContext(); try { const buffer=await context.decodeAudioData(await file.arrayBuffer()); return analyzeCompositionSamples(downmixChannels(Array.from({length:buffer.numberOfChannels},(_,i)=>buffer.getChannelData(i))),buffer.sampleRate); } finally { await context.close(); } }
+function linearResample(data: Float32Array, sourceRate: number, targetRate: number) {
+  if (sourceRate === targetRate) return data.slice();
+  const output = new Float32Array(Math.max(1, Math.ceil(data.length / sourceRate * targetRate)));
+  for (let index = 0; index < output.length; index++) {
+    const position = index * sourceRate / targetRate;
+    const left = Math.min(data.length - 1, Math.floor(position));
+    const right = Math.min(data.length - 1, left + 1);
+    const amount = position - left;
+    output[index] = data[left] * (1 - amount) + data[right] * amount;
+  }
+  return output;
+}
+
+async function resampleForEssentia(data: Float32Array, sourceRate: number) {
+  const targetRate = 44100;
+  if (sourceRate === targetRate) return data.slice();
+  try {
+    const length = Math.max(1, Math.ceil(data.length / sourceRate * targetRate));
+    const context = new OfflineAudioContext(1, length, targetRate);
+    const buffer = context.createBuffer(1, data.length, sourceRate);
+    buffer.copyToChannel(new Float32Array(data), 0);
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    source.start();
+    return (await context.startRendering()).getChannelData(0).slice();
+  } catch {
+    return linearResample(data, sourceRate, targetRate);
+  }
+}
+
+export async function analyzeCompositionAudio(file: File): Promise<CompositionAnalysis> {
+  const context = new AudioContext();
+  try {
+    const buffer = await context.decodeAudioData(await file.arrayBuffer());
+    const mono = downmixChannels(Array.from({length:buffer.numberOfChannels},(_,i)=>buffer.getChannelData(i)));
+    const result = analyzeCompositionSamples(mono, buffer.sampleRate);
+    const zirect = result.tempoCrossCheck!.zirect;
+    try {
+      const essentia = await analyzeEssentiaTempo(await resampleForEssentia(mono, buffer.sampleRate));
+      const tempoCrossCheck = reconcileTempoEstimates(zirect, essentia);
+      return {
+        ...result,
+        bpm: tempoCrossCheck.recommendedBpm,
+        tempoAmbiguous: result.tempoAmbiguous || tempoCrossCheck.needsConfirmation,
+        tempoCrossCheck,
+      };
+    } catch (reason) {
+      const error = reason instanceof Error ? reason.message : "Essentia chưa khả dụng.";
+      return { ...result, tempoCrossCheck: reconcileTempoEstimates(zirect, undefined, error) };
+    }
+  } finally {
+    await context.close();
+  }
+}
 
 const sectionKeys: Array<keyof Omit<CompositionSection, "start" | "end">> = ["onsetDensity", "restPercent", "longestRest", "phraseLength", "repetition", "melodicMovement", "harmonicChangeRate", "activity"];
 
