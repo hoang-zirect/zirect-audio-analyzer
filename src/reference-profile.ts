@@ -9,7 +9,7 @@ export const MAXIMUM_REFERENCE_TRACKS = 30;
 export type StoredCompositionFeatures = {
   duration: number;
   confirmedBpm: number;
-  tempoSources?: { zirectBpm: number; essentiaBpm?: number; status: TempoCrossCheckStatus };
+  tempoSources?: { zirectBpm: number; essentiaBpm?: number; status: TempoCrossCheckStatus; essentiaError?: string };
   onsetDensity: number;
   restPercent: number;
   longestRest: number;
@@ -140,6 +140,7 @@ function storedComposition(analysis: CompositionAnalysis, confirmedBpm = analysi
       zirectBpm: analysis.tempoCrossCheck.zirect.bpm,
       essentiaBpm: analysis.tempoCrossCheck.essentia?.bpm,
       status: analysis.tempoCrossCheck.status,
+      essentiaError: analysis.tempoCrossCheck.essentiaError,
     } : undefined,
     onsetDensity: analysis.onsetDensity,
     restPercent: analysis.restPercent,

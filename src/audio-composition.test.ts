@@ -20,8 +20,8 @@ describe("robust musical tempo",()=>{
 
 const zirectTempo = (bpm: number): ZirectTempoSource => ({ bpm, confidence: "High", candidates: [{ bpm, score: 90 }], ambiguous: false });
 describe("Zirect + Essentia tempo cross-check", () => {
- it("treats nearby estimates as agreement",()=>{const result=reconcileTempoEstimates(zirectTempo(55),{bpm:56,confidence:2.4,candidates:[56]});expect(result.status).toBe("agreement");expect(result.recommendedBpm).toBe(56);expect(result.needsConfirmation).toBe(false)});
- it("prefers the slow Piano Relaxing level for a half/double pair",()=>{const result=reconcileTempoEstimates(zirectTempo(55),{bpm:110,confidence:2,candidates:[110,55]});expect(result.status).toBe("half-double");expect(result.recommendedBpm).toBe(55);expect(result.needsConfirmation).toBe(true)});
- it("keeps disagreement visible instead of averaging unrelated tempos",()=>{const result=reconcileTempoEstimates(zirectTempo(55),{bpm:84,confidence:1,candidates:[84]});expect(result.status).toBe("conflict");expect(result.recommendedBpm).toBe(55);expect(result.message).toContain("chênh lệch rõ")});
+ it("treats nearby estimates as agreement",()=>{const result=reconcileTempoEstimates(zirectTempo(55),{bpm:56,confidence:2.4,candidates:[56],algorithm:"PercivalBpmEstimator"});expect(result.status).toBe("agreement");expect(result.recommendedBpm).toBe(56);expect(result.needsConfirmation).toBe(false)});
+ it("prefers the slow Piano Relaxing level for a half/double pair",()=>{const result=reconcileTempoEstimates(zirectTempo(55),{bpm:110,confidence:2,candidates:[110,55],algorithm:"PercivalBpmEstimator"});expect(result.status).toBe("half-double");expect(result.recommendedBpm).toBe(55);expect(result.needsConfirmation).toBe(true)});
+ it("keeps disagreement visible instead of averaging unrelated tempos",()=>{const result=reconcileTempoEstimates(zirectTempo(55),{bpm:84,confidence:1,candidates:[84],algorithm:"PercivalBpmEstimator"});expect(result.status).toBe("conflict");expect(result.recommendedBpm).toBe(55);expect(result.message).toContain("chênh lệch rõ")});
  it("falls back to Zirect when Essentia is unavailable",()=>{const result=reconcileTempoEstimates(zirectTempo(55),undefined,"WASM failed");expect(result.status).toBe("zirect-only");expect(result.recommendedBpm).toBe(55);expect(result.essentiaError).toBe("WASM failed")});
 });

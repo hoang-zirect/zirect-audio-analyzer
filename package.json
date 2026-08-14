@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "tsc -b --pretty false",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:essentia-runtime": "node --max-old-space-size=1024 scripts/essentia-worker-smoke.mjs"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",

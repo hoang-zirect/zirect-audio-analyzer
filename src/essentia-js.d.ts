@@ -10,6 +10,16 @@ declare module "essentia.js/dist/essentia.js-core.es.js" {
       estimates?: { size(): number; delete(): void };
       bpmIntervals?: { delete(): void };
     };
+    PercivalBpmEstimator(
+      signal: unknown,
+      frameSize?: number,
+      frameSizeOSS?: number,
+      hopSize?: number,
+      hopSizeOSS?: number,
+      maxBPM?: number,
+      minBPM?: number,
+      sampleRate?: number,
+    ): { bpm: number };
   }
 }
 

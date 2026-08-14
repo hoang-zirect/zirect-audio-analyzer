@@ -83,7 +83,7 @@ function CompositionOverview({ title, result, confirmedBpm, onConfirmedBpm }: { 
   const tempo = result.tempoCrossCheck;
   const statusLabels = { agreement: "Đồng thuận", "half-double": "Nửa / gấp đôi", conflict: "Cần xác nhận", "zirect-only": "Chỉ Zirect", "essentia-only": "Chỉ Essentia", unavailable: "Không xác định" };
   const zirectCandidates = tempo?.zirect.candidates ?? result.tempoCandidates;
-  const essentiaConfidence = typeof tempo?.essentia?.confidence === "number" ? `Confidence thô: ${tempo.essentia.confidence}` : "RhythmExtractor2013";
+  const essentiaConfidence = typeof tempo?.essentia?.confidence === "number" ? `Confidence thô: ${tempo.essentia.confidence}` : (tempo?.essentia?.algorithm ?? "PercivalBpmEstimator");
   return <section className="composition-overview"><header><div><p className="eyebrow">AUDIO ESTIMATES</p><h2>{title}</h2></div><span>Ước lượng sáng tác · không đánh giá mix/master</span></header>
     <div className={`tempo-review ${tempo?.needsConfirmation ? "needs-confirmation" : ""}`}>
       <div className="tempo-source-grid">

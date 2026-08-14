@@ -2,6 +2,7 @@ export type EssentiaTempoEstimate = {
   bpm: number;
   confidence?: number;
   candidates: number[];
+  algorithm: "PercivalBpmEstimator";
 };
 
 type TempoResponse = { id: number; result?: EssentiaTempoEstimate; error?: string };
