@@ -150,6 +150,9 @@ const amplitudeToDb = (value: number) => 20 * Math.log10(Math.max(value, 1e-10))
 const round = (value: number, places = 1) => Number(value.toFixed(places));
 const signed = (value: number, places = 1) => `${value >= 0 ? "+" : ""}${value.toFixed(places)}`;
 const waitForMainThread = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+const throwIfAborted = (signal?: AbortSignal) => {
+  if (signal?.aborted) throw new DOMException("Analysis cancelled.", "AbortError");
+};
 
 export const formatTimestamp = (seconds: number) => {
   const safe = Math.max(0, Math.round(seconds));
@@ -243,12 +246,13 @@ function loudnessRange(shortBlocks: number[]) {
   return Math.max(0, percentile(retained, 0.95) - percentile(retained, 0.1));
 }
 
-async function estimateTruePeak(channels: Float32Array[], samplePeak: number) {
+async function estimateTruePeak(channels: Float32Array[], samplePeak: number, signal?: AbortSignal) {
   let peak = samplePeak;
   const threshold = samplePeak * 0.62;
   const chunk = 1_500_000;
   for (const data of channels) {
     for (let start = 1; start < data.length - 2; start += chunk) {
+      throwIfAborted(signal);
       const end = Math.min(data.length - 2, start + chunk);
       for (let index = start; index < end; index += 1) {
         const p1 = data[index];
@@ -264,6 +268,7 @@ async function estimateTruePeak(channels: Float32Array[], samplePeak: number) {
         }
       }
       await waitForMainThread();
+      throwIfAborted(signal);
     }
   }
   return peak;
@@ -275,7 +280,7 @@ function median(values: number[]) {
   return percentile(sorted, 0.5);
 }
 
-async function measureCore(buffer: AudioBuffer, onProgress: (fraction: number) => void) {
+async function measureCore(buffer: AudioBuffer, onProgress: (fraction: number) => void, signal?: AbortSignal) {
   const sampleRate = buffer.sampleRate;
   const left = buffer.getChannelData(0);
   const right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : null;
@@ -310,6 +315,7 @@ async function measureCore(buffer: AudioBuffer, onProgress: (fraction: number) =
   const chunk = 750_000;
 
   for (let start = 0; start < left.length; start += chunk) {
+    throwIfAborted(signal);
     const end = Math.min(left.length, start + chunk);
     for (let index = start; index < end; index += 1) {
       const l = left[index];
@@ -364,9 +370,10 @@ async function measureCore(buffer: AudioBuffer, onProgress: (fraction: number) =
     }
     onProgress(end / left.length * 0.72);
     await waitForMainThread();
+    throwIfAborted(signal);
   }
 
-  const truePeak = await estimateTruePeak(channels, samplePeak);
+  const truePeak = await estimateTruePeak(channels, samplePeak, signal);
   onProgress(0.88);
 
   const integratedLufs = gatedLoudness(momentaryBlocks);
@@ -477,7 +484,7 @@ function fft(real: Float64Array, imaginary: Float64Array) {
   }
 }
 
-async function analyzeSpectrum(buffer: AudioBuffer, onProgress: (fraction: number) => void) {
+async function analyzeSpectrum(buffer: AudioBuffer, onProgress: (fraction: number) => void, signal?: AbortSignal) {
   const left = buffer.getChannelData(0);
   const right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : left;
   const sampleRate = buffer.sampleRate;
@@ -491,6 +498,7 @@ async function analyzeSpectrum(buffer: AudioBuffer, onProgress: (fraction: numbe
   const scale = 1 / (fftSize * fftSize);
 
   for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+    throwIfAborted(signal);
     const maxStart = Math.max(0, left.length - fftSize);
     const start = frameCount === 1 ? 0 : Math.round(maxStart * frameIndex / (frameCount - 1));
     const realL = new Float64Array(fftSize);
@@ -524,6 +532,7 @@ async function analyzeSpectrum(buffer: AudioBuffer, onProgress: (fraction: numbe
     if (frameIndex % 8 === 0) {
       onProgress((frameIndex + 1) / frameCount);
       await waitForMainThread();
+      throwIfAborted(signal);
     }
   }
 
@@ -618,16 +627,18 @@ function codecAssessment(file: File, duration: number) {
   return { extension, bitrateKbps: round(bitrateKbps, 0), comparableHighHz, codecWarning };
 }
 
-async function analyzeSingle(file: File, onProgress: (fraction: number, label: string) => void) {
+async function analyzeSingle(file: File, onProgress: (fraction: number, label: string) => void, signal?: AbortSignal) {
   const context = new AudioContext({ sampleRate: ANALYSIS_RATE });
   try {
+    throwIfAborted(signal);
     onProgress(0.02, "Decoding Audio");
     const sourceHeader = await parseSourceHeader(file);
     const buffer = await context.decodeAudioData(await file.arrayBuffer());
+    throwIfAborted(signal);
     onProgress(0.12, "Measuring Loudness and Dynamics");
-    const core = await measureCore(buffer, (fraction) => onProgress(0.12 + fraction * 0.48, "Measuring LUFS, True Peak, and Phase"));
+    const core = await measureCore(buffer, (fraction) => onProgress(0.12 + fraction * 0.48, "Measuring LUFS, True Peak, and Phase"), signal);
     onProgress(0.61, "Analyzing Per-Channel Spectrum");
-    const spectral = await analyzeSpectrum(buffer, (fraction) => onProgress(0.61 + fraction * 0.37, "Measuring L/R Spectrum and Band Stereo"));
+    const spectral = await analyzeSpectrum(buffer, (fraction) => onProgress(0.61 + fraction * 0.37, "Measuring L/R Spectrum and Band Stereo"), signal);
     const codec = codecAssessment(file, buffer.duration);
     onProgress(1, "Track Analysis Complete");
     return {
@@ -730,7 +741,7 @@ function bandRecommendation(key: BandKey, delta: number) {
   };
 }
 
-function buildPairAnalysis(demo: AudioMetrics, reference: AudioMetrics): PairAnalysis {
+export function buildPairAnalysis(demo: AudioMetrics, reference: AudioMetrics): PairAnalysis {
   const originalDeltaDb = demo.loudness.integratedLufs - reference.loudness.integratedLufs;
   const targetLufs = Math.min(demo.loudness.integratedLufs, reference.loudness.integratedLufs);
   const demoGainDb = targetLufs - demo.loudness.integratedLufs;
@@ -1133,13 +1144,16 @@ function buildPairAnalysis(demo: AudioMetrics, reference: AudioMetrics): PairAna
   };
 }
 
-export async function analyzePair(demoFile: File, referenceFile: File, onProgress: ProgressCallback): Promise<PairAnalysis> {
+export async function analyzePair(demoFile: File, referenceFile: File, onProgress: ProgressCallback, signal?: AbortSignal): Promise<PairAnalysis> {
+  throwIfAborted(signal);
   onProgress(1, "Preparing the Measurement Engine");
-  const demo = await analyzeSingle(demoFile, (fraction, label) => onProgress(3 + fraction * 45, `Demo: ${label}`));
+  const demo = await analyzeSingle(demoFile, (fraction, label) => onProgress(3 + fraction * 45, `Demo: ${label}`), signal);
   await waitForMainThread();
-  const reference = await analyzeSingle(referenceFile, (fraction, label) => onProgress(50 + fraction * 45, `Reference: ${label}`));
+  throwIfAborted(signal);
+  const reference = await analyzeSingle(referenceFile, (fraction, label) => onProgress(50 + fraction * 45, `Reference: ${label}`), signal);
   onProgress(96, "Applying Loudness Match and Comparing Results");
   await waitForMainThread();
+  throwIfAborted(signal);
   const result = buildPairAnalysis(demo, reference);
   onProgress(100, "Analysis Complete");
   return result;

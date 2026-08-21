@@ -1,3 +1,5 @@
+import { decodeAudioFile, downmixChannels } from "./audio-composition";
+
 export type MidiNote = { note: number; name: string; start: number; duration: number; velocity: number; track?: number };
 export type ChordEvent = { start: number; end: number; name: string; roman: string };
 export type MelodyMetric = { label: string; score: number; explanation: string };
@@ -118,8 +120,56 @@ export function scoreMelody(notes: MidiNote[], tonality: Tonality | number, sign
   ];
 }
 
-export async function analyzeAudioTonality(file: File) {
-  const context = new AudioContext(); try { const buffer = await context.decodeAudioData(await file.arrayBuffer()); const data = buffer.getChannelData(0); const sr = buffer.sampleRate; const hop = Math.max(1, Math.floor(sr * .05)); const energy: number[] = []; for (let i = 0; i < data.length; i += hop) { let sum = 0; for (let j = i; j < Math.min(data.length, i + hop); j++) sum += data[j] * data[j]; energy.push(Math.sqrt(sum / hop)); } const onsets = energy.map((e, i) => i && e > energy[i - 1] * 1.35 && e > .01 ? 1 : 0); const { bpm, strength } = detectBpmFromOnsets(onsets); const peakEnergy = Math.max(...energy, 1e-6); const waveform = Array.from({ length: 180 }, (_, index) => { const from = Math.floor(index * energy.length / 180); const to = Math.max(from + 1, Math.floor((index + 1) * energy.length / 180)); return Math.max(...energy.slice(from, to), 0) / peakEnergy; }); const activeFrames = energy.filter(value => value > peakEnergy * .12).length; const highActivitySections = waveform.map((value, index) => ({ value, time: index / waveform.length * buffer.duration })).filter(point => point.value > .72).filter((point, index, all) => index === 0 || point.time - all[index - 1].time > 5).slice(0, 8); const chroma = Array(12).fill(0); const stride = Math.max(1, Math.floor(data.length / 120000)); for (let midi = 36; midi <= 84; midi++) { const freq = 440 * 2 ** ((midi - 69) / 12); let re = 0, im = 0; for (let i = 0; i < data.length; i += stride) { const phase = 2 * Math.PI * freq * i / sr; re += data[i] * Math.cos(phase); im -= data[i] * Math.sin(phase); } chroma[midi % 12] += Math.hypot(re, im); } const tonic = chroma.indexOf(Math.max(...chroma)); const confidence = Math.round(100 * chroma[tonic] / Math.max(1, chroma.reduce((a, b) => a + b))); return { bpm, bpmConfidence: clamp(35 + strength * 4), key: NAMES[tonic], keyConfidence: clamp(confidence * 4), duration: buffer.duration, waveform, activityPercent: Math.round(activeFrames / Math.max(1, energy.length) * 100), restPercent: Math.round((1 - activeFrames / Math.max(1, energy.length)) * 100), highActivitySections }; } finally { await context.close(); }
+export async function analyzeAudioTonality(file: File, decodedBuffer?: AudioBuffer) {
+  const buffer = decodedBuffer ?? await decodeAudioFile(file);
+  const data = downmixChannels(Array.from({ length: buffer.numberOfChannels }, (_, index) => buffer.getChannelData(index)));
+  const sr = buffer.sampleRate;
+  const hop = Math.max(1, Math.floor(sr * .05));
+  const energy: number[] = [];
+  for (let i = 0; i < data.length; i += hop) {
+    let sum = 0;
+    for (let j = i; j < Math.min(data.length, i + hop); j++) sum += data[j] * data[j];
+    energy.push(Math.sqrt(sum / Math.max(1, Math.min(hop, data.length - i))));
+  }
+  const onsets = energy.map((value, index) => index && value > energy[index - 1] * 1.35 && value > .01 ? 1 : 0);
+  const { bpm, strength } = detectBpmFromOnsets(onsets);
+  const peakEnergy = Math.max(...energy, 1e-6);
+  const waveform = Array.from({ length: 180 }, (_, index) => {
+    const from = Math.floor(index * energy.length / 180);
+    const to = Math.max(from + 1, Math.floor((index + 1) * energy.length / 180));
+    return Math.max(...energy.slice(from, to), 0) / peakEnergy;
+  });
+  const activeFrames = energy.filter(value => value > peakEnergy * .12).length;
+  const highActivitySections = waveform
+    .map((value, index) => ({ value, time: index / waveform.length * buffer.duration }))
+    .filter(point => point.value > .72)
+    .filter((point, index, all) => index === 0 || point.time - all[index - 1].time > 5)
+    .slice(0, 8);
+  const chroma = Array(12).fill(0);
+  const stride = Math.max(1, Math.floor(data.length / 120000));
+  for (let midi = 36; midi <= 84; midi++) {
+    const frequency = 440 * 2 ** ((midi - 69) / 12);
+    let real = 0, imaginary = 0;
+    for (let i = 0; i < data.length; i += stride) {
+      const phase = 2 * Math.PI * frequency * i / sr;
+      real += data[i] * Math.cos(phase);
+      imaginary -= data[i] * Math.sin(phase);
+    }
+    chroma[midi % 12] += Math.hypot(real, imaginary);
+  }
+  const tonic = chroma.indexOf(Math.max(...chroma));
+  const tonalConfidence = Math.round(100 * chroma[tonic] / Math.max(1, chroma.reduce((sum, value) => sum + value)));
+  return {
+    bpm,
+    bpmConfidence: clamp(35 + strength * 4),
+    key: NAMES[tonic],
+    keyConfidence: clamp(tonalConfidence * 4),
+    duration: buffer.duration,
+    waveform,
+    activityPercent: Math.round(activeFrames / Math.max(1, energy.length) * 100),
+    restPercent: Math.round((1 - activeFrames / Math.max(1, energy.length)) * 100),
+    highActivitySections,
+  };
 }
 
 export function detectBpmFromOnsets(onsets: number[], frameSeconds = .05) {
