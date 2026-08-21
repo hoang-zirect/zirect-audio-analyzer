@@ -1,4 +1,5 @@
 import type { NoteEventTime } from "@spotify/basic-pitch";
+import { decodeAudioFile, downmixChannels } from "./audio-composition";
 
 export type TranscribedPianoNote = {
   start: number;
@@ -162,38 +163,36 @@ async function getBasicPitch() {
   return basicPitch;
 }
 
-export async function transcribePianoAudio(file: File, onProgress: (progress: number) => void = () => undefined): Promise<PianoTranscription> {
-  const context = new AudioContext();
-  try {
-    onProgress(0);
-    const buffer = await context.decodeAudioData(await file.arrayBuffer());
-    // Basic Pitch expects mono 22.05 kHz. OfflineAudioContext performs both
-    // channel mixing and band-limited browser-native resampling.
-    const sampleRate = 22050;
-    const offline = new OfflineAudioContext(1, Math.max(1, Math.ceil(buffer.duration * sampleRate)), sampleRate);
-    const source = offline.createBufferSource();
-    source.buffer = buffer;
-    source.connect(offline.destination);
-    source.start();
-    const resampled = await offline.startRendering();
-    const model = await getBasicPitch();
-    const frames: number[][] = [], onsets: number[][] = [], contours: number[][] = [];
-    await model.evaluateModel(resampled.getChannelData(0), (frameBatch, onsetBatch, contourBatch) => {
-      frames.push(...frameBatch);
-      onsets.push(...onsetBatch);
-      contours.push(...contourBatch);
-    }, progress => onProgress(clamp(progress * 100)));
-    const { addPitchBendsToNoteEvents, noteFramesToTime, outputToNotesPoly } = await import("@spotify/basic-pitch");
-    const noteEvents: NoteEventTime[] = noteFramesToTime(addPitchBendsToNoteEvents(contours, outputToNotesPoly(frames, onsets, .3, .28, 5)));
-    const notes = noteEvents.map(note => ({
-      start: note.startTimeSeconds,
-      duration: note.durationSeconds,
-      pitch: note.pitchMidi,
-      amplitude: note.amplitude,
-    }));
-    onProgress(100);
-    return summarizePianoTranscription(notes, buffer.duration);
-  } finally {
-    await context.close();
-  }
+export async function transcribePianoAudio(file: File, onProgress: (progress: number) => void = () => undefined, decodedBuffer?: AudioBuffer): Promise<PianoTranscription> {
+  onProgress(0);
+  const buffer = decodedBuffer ?? await decodeAudioFile(file);
+  // Basic Pitch expects mono 22.05 kHz. OfflineAudioContext performs both
+  // channel mixing and band-limited browser-native resampling.
+  const sampleRate = 22050;
+  const offline = new OfflineAudioContext(1, Math.max(1, Math.ceil(buffer.duration * sampleRate)), sampleRate);
+  const source = offline.createBufferSource();
+  const mono = downmixChannels(Array.from({ length: buffer.numberOfChannels }, (_, index) => buffer.getChannelData(index)));
+  const monoBuffer = offline.createBuffer(1, mono.length, buffer.sampleRate);
+  monoBuffer.copyToChannel(new Float32Array(mono), 0);
+  source.buffer = monoBuffer;
+  source.connect(offline.destination);
+  source.start();
+  const resampled = await offline.startRendering();
+  const model = await getBasicPitch();
+  const frames: number[][] = [], onsets: number[][] = [], contours: number[][] = [];
+  await model.evaluateModel(resampled.getChannelData(0), (frameBatch, onsetBatch, contourBatch) => {
+    frames.push(...frameBatch);
+    onsets.push(...onsetBatch);
+    contours.push(...contourBatch);
+  }, progress => onProgress(clamp(progress * 100)));
+  const { addPitchBendsToNoteEvents, noteFramesToTime, outputToNotesPoly } = await import("@spotify/basic-pitch");
+  const noteEvents: NoteEventTime[] = noteFramesToTime(addPitchBendsToNoteEvents(contours, outputToNotesPoly(frames, onsets, .3, .28, 5)));
+  const notes = noteEvents.map(note => ({
+    start: note.startTimeSeconds,
+    duration: note.durationSeconds,
+    pitch: note.pitchMidi,
+    amplitude: note.amplitude,
+  }));
+  onProgress(100);
+  return summarizePianoTranscription(notes, buffer.duration);
 }

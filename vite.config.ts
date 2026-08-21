@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
-  // Tự khớp với GitHub Pages khi repository có tên zirect-audio-analyzer.
+  // Root is correct for local/Vercel previews. The GitHub Pages workflow
+  // explicitly builds with --base=/zirect-audio-analyzer/.
   base: "/",
 });

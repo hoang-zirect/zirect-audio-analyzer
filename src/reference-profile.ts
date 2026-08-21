@@ -5,10 +5,12 @@ export const REFERENCE_PROFILE_SCHEMA = "zirect-piano-reference/1";
 export const REFERENCE_PROFILE_STORAGE_KEY = "zirect-piano-reference-profile";
 export const MINIMUM_REFERENCE_TRACKS = 5;
 export const MAXIMUM_REFERENCE_TRACKS = 30;
+export const MAXIMUM_REFERENCE_PROFILE_JSON_SIZE = 2_000_000;
 
 export type StoredCompositionFeatures = {
   duration: number;
   confirmedBpm: number;
+  bpmManuallyConfirmed?: boolean;
   tempoSources?: { zirectBpm: number; essentiaBpm?: number; status: TempoCrossCheckStatus; essentiaError?: string };
   onsetDensity: number;
   restPercent: number;
@@ -88,6 +90,16 @@ export type ProfileEvaluation = {
   transcriptionCoverage: number;
 };
 
+export type ReferenceProfileHealth = {
+  status: "insufficient" | "limited" | "ready";
+  trackCount: number;
+  requiredTrackCount: number;
+  verifiedTempoCount: number;
+  dualTempoCount: number;
+  transcriptionCount: number;
+  requiredCoverageCount: number;
+};
+
 const round = (value: number, precision = 1) => Number(value.toFixed(precision));
 const clamp = (value: number, minimum = 0, maximum = 100) => Math.max(minimum, Math.min(maximum, value));
 const id = () => globalThis.crypto?.randomUUID?.() ?? `profile-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -136,6 +148,7 @@ function storedComposition(analysis: CompositionAnalysis, confirmedBpm = analysi
   return {
     duration: round(analysis.duration, 3),
     confirmedBpm,
+    bpmManuallyConfirmed: false,
     tempoSources: analysis.tempoCrossCheck ? {
       zirectBpm: analysis.tempoCrossCheck.zirect.bpm,
       essentiaBpm: analysis.tempoCrossCheck.essentia?.bpm,
@@ -171,7 +184,18 @@ export function createReferenceTrack(name: string, analysis: CompositionAnalysis
   };
 }
 
+export function referenceTrackHasVerifiedTempo(track: ReferenceTrackProfile) {
+  const bpm = track.composition.confirmedBpm;
+  const sources = track.composition.tempoSources;
+  const sourceAgreement = sources?.status === "agreement"
+    && Number.isFinite(sources.zirectBpm) && sources.zirectBpm >= 30 && sources.zirectBpm <= 220
+    && Number.isFinite(sources.essentiaBpm) && Number(sources.essentiaBpm) >= 30 && Number(sources.essentiaBpm) <= 220;
+  return Number.isFinite(bpm) && bpm >= 30 && bpm <= 220
+    && (track.composition.bpmManuallyConfirmed === true || sourceAgreement);
+}
+
 function metricValue(track: ReferenceTrackProfile, key: ReferenceMetricKey): number | undefined {
+  if (key === "confirmedBpm" && !referenceTrackHasVerifiedTempo(track)) return undefined;
   if (key === "transcriptionPhraseLength") return track.transcription?.averagePhraseLength;
   if (key in track.composition) return Number(track.composition[key as keyof StoredCompositionFeatures]);
   return track.transcription?.[key as keyof StoredTranscriptionFeatures] as number | undefined;
@@ -204,8 +228,40 @@ export function buildReferenceProfile(name: string, tracks: ReferenceTrackProfil
 
 export const profileIsReady = (profile?: ReferenceLibraryProfile | null) => (profile?.tracks.length ?? 0) >= MINIMUM_REFERENCE_TRACKS;
 
+export function assessReferenceProfile(profile?: ReferenceLibraryProfile | null): ReferenceProfileHealth {
+  const tracks = profile?.tracks ?? [];
+  const trackCount = tracks.length;
+  const requiredCoverageCount = Math.max(3, Math.ceil(trackCount * .6));
+  const verifiedTempoCount = tracks.filter(referenceTrackHasVerifiedTempo).length;
+  const dualTempoCount = tracks.filter(track => {
+    const bpm = track.composition.tempoSources?.essentiaBpm;
+    return Number.isFinite(bpm) && Number(bpm) >= 30 && Number(bpm) <= 220;
+  }).length;
+  const transcriptionCount = tracks.filter(track => track.transcription).length;
+  const enoughTracks = trackCount >= MINIMUM_REFERENCE_TRACKS;
+  const status = !enoughTracks
+    ? "insufficient"
+    : verifiedTempoCount >= requiredCoverageCount && transcriptionCount >= requiredCoverageCount
+      ? "ready"
+      : "limited";
+  return {
+    status,
+    trackCount,
+    requiredTrackCount: MINIMUM_REFERENCE_TRACKS,
+    verifiedTempoCount,
+    dualTempoCount,
+    transcriptionCount,
+    requiredCoverageCount,
+  };
+}
+
+export const profileSupportsTranscription = (profile?: ReferenceLibraryProfile | null) => {
+  const health = assessReferenceProfile(profile);
+  return health.trackCount >= MINIMUM_REFERENCE_TRACKS && health.transcriptionCount >= 3;
+};
+
 export function updateReferenceTrackBpm(profile: ReferenceLibraryProfile, trackId: string, bpm: number) {
-  return buildReferenceProfile(profile.name, profile.tracks.map(track => track.id === trackId ? { ...track, composition: { ...track.composition, confirmedBpm: bpm } } : track), profile.id);
+  return buildReferenceProfile(profile.name, profile.tracks.map(track => track.id === trackId ? { ...track, composition: { ...track.composition, confirmedBpm: bpm, bpmManuallyConfirmed: true } } : track), profile.id);
 }
 
 export function removeReferenceTrack(profile: ReferenceLibraryProfile, trackId: string) {
@@ -300,13 +356,115 @@ export function loadReferenceProfile(): ReferenceLibraryProfile | undefined {
 }
 
 export function importReferenceProfile(raw: string): ReferenceLibraryProfile {
-  const parsed = JSON.parse(raw) as Partial<ReferenceLibraryProfile>;
-  if (parsed.schema !== REFERENCE_PROFILE_SCHEMA || !Array.isArray(parsed.tracks) || typeof parsed.name !== "string") throw new Error("Tệp không phải Hồ sơ tham chiếu Zirect hợp lệ.");
-  const validTracks = parsed.tracks.filter(track => track && typeof track.id === "string" && typeof track.name === "string" && track.composition && Array.isArray(track.composition.sections));
-  if (!validTracks.length) throw new Error("Hồ sơ không chứa bài tham chiếu hợp lệ.");
-  return buildReferenceProfile(parsed.name, validTracks, parsed.id);
+  if (raw.length > MAXIMUM_REFERENCE_PROFILE_JSON_SIZE) throw new Error("Hồ sơ JSON vượt quá giới hạn 2 MB.");
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw) as unknown; }
+  catch { throw new Error("Tệp JSON bị lỗi hoặc không đọc được."); }
+  if (!isRecord(parsed) || parsed.schema !== REFERENCE_PROFILE_SCHEMA || typeof parsed.name !== "string" || !parsed.name.trim() || parsed.name.length > 100 || !Array.isArray(parsed.tracks)) throw new Error("Tệp không phải Hồ sơ tham chiếu Zirect hợp lệ.");
+  if (!parsed.tracks.length) throw new Error("Hồ sơ không chứa bài tham chiếu hợp lệ.");
+  if (parsed.tracks.length > MAXIMUM_REFERENCE_TRACKS) throw new Error(`Hồ sơ chỉ hỗ trợ tối đa ${MAXIMUM_REFERENCE_TRACKS} bài.`);
+  const tracks = parsed.tracks.map((track, index) => validateReferenceTrack(track, index));
+  return buildReferenceProfile(parsed.name, tracks, typeof parsed.id === "string" ? parsed.id : undefined);
 }
 
 export const exportReferenceProfile = (profile: ReferenceLibraryProfile) => JSON.stringify(profile, null, 2);
 
 const formatTime = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+
+const COMPOSITION_NUMBERS: Array<keyof StoredCompositionFeatures> = [
+  "duration", "confirmedBpm", "onsetDensity", "restPercent", "longestRest", "averagePhraseLength",
+  "introOutroSilence", "repetition", "melodicMovement", "harmonicChangeRate", "activityPercent",
+];
+const COMPOSITION_SECTION_NUMBERS: Array<keyof Omit<CompositionSection, "start" | "end">> = [
+  "onsetDensity", "restPercent", "longestRest", "phraseLength", "repetition", "melodicMovement", "harmonicChangeRate", "activity",
+];
+const TRANSCRIPTION_NUMBERS: Array<keyof Omit<StoredTranscriptionFeatures, "sections">> = [
+  "duration", "totalNotes", "totalNotesPerMinute", "melodyNotesPerMinute", "melodyRestPercent", "averageInterval",
+  "largeLeapsPerMinute", "melodyRange", "lowNotesPerMinute", "motifRecurrence", "averagePhraseLength", "confidencePercent",
+];
+const TRANSCRIPTION_SECTION_NUMBERS: Array<keyof Omit<TranscriptionSection, "start" | "end">> = [
+  "melodyNotesPerMinute", "melodyRestPercent", "averageInterval", "largeLeapsPerMinute", "lowNotesPerMinute", "activityPercent",
+];
+const TEMPO_STATUSES = new Set<TempoCrossCheckStatus>(["agreement", "half-double", "conflict", "zirect-only", "essentia-only", "unavailable"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasFiniteNumbers(value: Record<string, unknown>, keys: readonly string[]) {
+  return keys.every(key => typeof value[key] === "number" && Number.isFinite(value[key]));
+}
+
+function validateSections<T>(value: unknown, keys: readonly string[], label: string): T[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 8 || !value.every(section => isRecord(section) && hasFiniteNumbers(section, keys))) {
+    throw new Error(`${label} không hợp lệ.`);
+  }
+  return value.map(section => Object.fromEntries(keys.map(key => [key, Number((section as Record<string, unknown>)[key])]))) as T[];
+}
+
+function validateReferenceTrack(value: unknown, index: number): ReferenceTrackProfile {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id || value.id.length > 200 || typeof value.name !== "string" || !value.name || value.name.length > 300 || !isRecord(value.composition)) {
+    throw new Error(`Bài tham chiếu số ${index + 1} không hợp lệ.`);
+  }
+  const composition = value.composition;
+  if (!hasFiniteNumbers(composition, COMPOSITION_NUMBERS) || Number(composition.duration) <= 0 || Number(composition.confirmedBpm) < 0 || Number(composition.confirmedBpm) > 300) {
+    throw new Error(`Dữ liệu audio của bài ${index + 1} không hợp lệ.`);
+  }
+  const sections = validateSections<StoredCompositionFeatures["sections"][number]>(composition.sections, COMPOSITION_SECTION_NUMBERS, `Các đoạn audio của bài ${index + 1}`);
+  let tempoSources: StoredCompositionFeatures["tempoSources"];
+  if (composition.tempoSources !== undefined) {
+    if (!isRecord(composition.tempoSources) || typeof composition.tempoSources.zirectBpm !== "number" || !Number.isFinite(composition.tempoSources.zirectBpm) || typeof composition.tempoSources.status !== "string" || !TEMPO_STATUSES.has(composition.tempoSources.status as TempoCrossCheckStatus)) {
+      throw new Error(`Nguồn BPM của bài ${index + 1} không hợp lệ.`);
+    }
+    if (composition.tempoSources.essentiaBpm !== undefined && (typeof composition.tempoSources.essentiaBpm !== "number" || !Number.isFinite(composition.tempoSources.essentiaBpm))) {
+      throw new Error(`BPM Essentia của bài ${index + 1} không hợp lệ.`);
+    }
+    tempoSources = {
+      zirectBpm: Number(composition.tempoSources.zirectBpm),
+      essentiaBpm: composition.tempoSources.essentiaBpm === undefined ? undefined : Number(composition.tempoSources.essentiaBpm),
+      status: composition.tempoSources.status as TempoCrossCheckStatus,
+      essentiaError: typeof composition.tempoSources.essentiaError === "string" ? composition.tempoSources.essentiaError.slice(0, 500) : undefined,
+    };
+  }
+  let transcription: StoredTranscriptionFeatures | undefined;
+  if (value.transcription !== undefined) {
+    if (!isRecord(value.transcription) || !hasFiniteNumbers(value.transcription, TRANSCRIPTION_NUMBERS)) throw new Error(`Dữ liệu chép nốt của bài ${index + 1} không hợp lệ.`);
+    transcription = {
+      duration: Number(value.transcription.duration),
+      totalNotes: Number(value.transcription.totalNotes),
+      totalNotesPerMinute: Number(value.transcription.totalNotesPerMinute),
+      melodyNotesPerMinute: Number(value.transcription.melodyNotesPerMinute),
+      melodyRestPercent: Number(value.transcription.melodyRestPercent),
+      averageInterval: Number(value.transcription.averageInterval),
+      largeLeapsPerMinute: Number(value.transcription.largeLeapsPerMinute),
+      melodyRange: Number(value.transcription.melodyRange),
+      lowNotesPerMinute: Number(value.transcription.lowNotesPerMinute),
+      motifRecurrence: Number(value.transcription.motifRecurrence),
+      averagePhraseLength: Number(value.transcription.averagePhraseLength),
+      confidencePercent: Number(value.transcription.confidencePercent),
+      sections: validateSections<StoredTranscriptionFeatures["sections"][number]>(value.transcription.sections, TRANSCRIPTION_SECTION_NUMBERS, `Các đoạn chép nốt của bài ${index + 1}`),
+    };
+  }
+  return {
+    id: value.id,
+    name: value.name,
+    addedAt: typeof value.addedAt === "string" ? value.addedAt : new Date(0).toISOString(),
+    composition: {
+      duration: Number(composition.duration),
+      confirmedBpm: Number(composition.confirmedBpm),
+      bpmManuallyConfirmed: composition.bpmManuallyConfirmed === true,
+      tempoSources,
+      onsetDensity: Number(composition.onsetDensity),
+      restPercent: Number(composition.restPercent),
+      longestRest: Number(composition.longestRest),
+      averagePhraseLength: Number(composition.averagePhraseLength),
+      introOutroSilence: Number(composition.introOutroSilence),
+      repetition: Number(composition.repetition),
+      melodicMovement: Number(composition.melodicMovement),
+      harmonicChangeRate: Number(composition.harmonicChangeRate),
+      activityPercent: Number(composition.activityPercent),
+      sections,
+    },
+    transcription,
+  };
+}

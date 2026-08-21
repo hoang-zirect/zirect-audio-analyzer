@@ -44,6 +44,16 @@ const mean = (a: number[]) => a.reduce((s, n) => s + n, 0) / Math.max(1, a.lengt
 const round = (n: number, p = 1) => Number(n.toFixed(p));
 const confidence = (events: number, duration: number): ConfidenceLabel => events >= Math.max(12, duration / 3) ? "High" : events >= 4 ? "Medium" : "Low";
 
+/** Decode once and reuse the AudioBuffer across the composition, tonal and AI passes. */
+export async function decodeAudioFile(file: File): Promise<AudioBuffer> {
+  const context = new AudioContext();
+  try {
+    return await context.decodeAudioData(await file.arrayBuffer());
+  } finally {
+    await context.close();
+  }
+}
+
 type TempoEstimate = { bpm: number; stability: number; confidence: ConfidenceLabel; candidates: Array<{ bpm: number; score: number }>; ambiguous: boolean };
 const correlationAt = (values: number[], lag: number) => {
   const rounded = Math.max(1, Math.round(lag)); let xy = 0, xx = 0, yy = 0;
@@ -220,28 +230,23 @@ async function resampleForEssentia(data: Float32Array, sourceRate: number) {
   }
 }
 
-export async function analyzeCompositionAudio(file: File): Promise<CompositionAnalysis> {
-  const context = new AudioContext();
+export async function analyzeCompositionAudio(file: File, decodedBuffer?: AudioBuffer): Promise<CompositionAnalysis> {
+  const buffer = decodedBuffer ?? await decodeAudioFile(file);
+  const mono = downmixChannels(Array.from({length:buffer.numberOfChannels},(_,i)=>buffer.getChannelData(i)));
+  const result = analyzeCompositionSamples(mono, buffer.sampleRate);
+  const zirect = result.tempoCrossCheck!.zirect;
   try {
-    const buffer = await context.decodeAudioData(await file.arrayBuffer());
-    const mono = downmixChannels(Array.from({length:buffer.numberOfChannels},(_,i)=>buffer.getChannelData(i)));
-    const result = analyzeCompositionSamples(mono, buffer.sampleRate);
-    const zirect = result.tempoCrossCheck!.zirect;
-    try {
-      const essentia = await analyzeEssentiaTempo(await resampleForEssentia(mono, buffer.sampleRate));
-      const tempoCrossCheck = reconcileTempoEstimates(zirect, essentia);
-      return {
-        ...result,
-        bpm: tempoCrossCheck.recommendedBpm,
-        tempoAmbiguous: result.tempoAmbiguous || tempoCrossCheck.needsConfirmation,
-        tempoCrossCheck,
-      };
-    } catch (reason) {
-      const error = reason instanceof Error ? reason.message : "Essentia chưa khả dụng.";
-      return { ...result, tempoCrossCheck: reconcileTempoEstimates(zirect, undefined, error) };
-    }
-  } finally {
-    await context.close();
+    const essentia = await analyzeEssentiaTempo(await resampleForEssentia(mono, buffer.sampleRate));
+    const tempoCrossCheck = reconcileTempoEstimates(zirect, essentia);
+    return {
+      ...result,
+      bpm: tempoCrossCheck.recommendedBpm,
+      tempoAmbiguous: result.tempoAmbiguous || tempoCrossCheck.needsConfirmation,
+      tempoCrossCheck,
+    };
+  } catch (reason) {
+    const error = reason instanceof Error ? reason.message : "Essentia chưa khả dụng.";
+    return { ...result, tempoCrossCheck: reconcileTempoEstimates(zirect, undefined, error) };
   }
 }
 

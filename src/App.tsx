@@ -20,7 +20,7 @@ type SelectedAudio = {
   channels?: number;
 };
 
-const MAX_FILE_SIZE = 500 * 1024 * 1024;
+const MAX_FILE_SIZE = 300 * 1024 * 1024;
 const ACCEPTED_EXTENSIONS = ["wav", "flac", "mp3", "m4a", "aac", "ogg", "opus"];
 
 const formatBytes = (bytes: number) => {
@@ -69,13 +69,16 @@ export default function Home() {
   const [progress, setProgress] = useState({ value: 0, label: "Preparing analysis" });
   const demoInput = useRef<HTMLInputElement>(null);
   const referenceInput = useRef<HTMLInputElement>(null);
+  const analysisRun = useRef(0);
+  const analysisAbort = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => { analysisRun.current += 1; analysisAbort.current?.abort(); }, []);
 
   const validateFile = (file: File) => {
     const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
     if (!ACCEPTED_EXTENSIONS.includes(extension)) {
       return "Unsupported format. Use WAV, FLAC, MP3, M4A, AAC, OGG, or OPUS.";
     }
-    if (file.size > MAX_FILE_SIZE) return "The file exceeds the 500 MB limit.";
+    if (file.size > MAX_FILE_SIZE) return "The file exceeds the 300 MB browser-safety limit.";
     return null;
   };
 
@@ -83,6 +86,9 @@ export default function Home() {
     const error = validateFile(file);
     setErrors((current) => ({ ...current, [slot]: error ?? undefined }));
     if (error) return;
+    analysisRun.current += 1;
+    analysisAbort.current?.abort();
+    setAnalyzing(false);
     const next = { file };
     if (slot === "demo") setDemo(next);
     else setReference(next);
@@ -105,6 +111,9 @@ export default function Home() {
   };
 
   const removeFile = (slot: Slot) => {
+    analysisRun.current += 1;
+    analysisAbort.current?.abort();
+    setAnalyzing(false);
     if (slot === "demo") setDemo(null);
     else setReference(null);
     setPreviewing(null);
@@ -115,31 +124,46 @@ export default function Home() {
 
   const runAnalysis = async () => {
     if (!demo || !reference || analyzing) return;
+    const run = ++analysisRun.current;
+    analysisAbort.current?.abort();
+    const controller = new AbortController();
+    analysisAbort.current = controller;
     setPreviewing(null);
     setAnalyzing(true);
     setAnalysisError(null);
     setProgress({ value: 1, label: "Preparing the measurement engine" });
     try {
       const result = await analyzePair(demo.file, reference.file, (value, label) => {
-        setProgress({ value, label });
-      });
+        if (analysisRun.current === run) setProgress({ value, label });
+      }, controller.signal);
+      if (analysisRun.current !== run) return;
       setAnalysis(result);
       setDemo((current) => current ? ({ ...current, duration: result.demo.meta.duration, sampleRate: result.demo.meta.analysisSampleRate, channels: result.demo.meta.channels }) : current);
       setReference((current) => current ? ({ ...current, duration: result.reference.meta.duration, sampleRate: result.reference.meta.analysisSampleRate, channels: result.reference.meta.channels }) : current);
       setView("report");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "The file could not be analyzed.";
-      setAnalysisError(`One of the files could not be decoded or measured: ${message}. Try a clean WAV or FLAC export and run the analysis again.`);
+      if (analysisRun.current === run) {
+        const message = error instanceof Error ? error.message : "The file could not be analyzed.";
+        setAnalysisError(`One of the files could not be decoded or measured: ${message}. Try a clean WAV or FLAC export and run the analysis again.`);
+      }
     } finally {
-      setAnalyzing(false);
+      if (analysisRun.current === run) { setAnalyzing(false); analysisAbort.current = undefined; }
     }
+  };
+
+  const changeReviewMode = (mode: "sleep" | "piano") => {
+    if (mode === reviewMode) return;
+    analysisRun.current += 1;
+    analysisAbort.current?.abort();
+    setAnalyzing(false);
+    setReviewMode(mode);
   };
 
   const fileReady = Boolean(demo && reference);
 
   return (
     <main className={`app-shell ${view === "report" ? "report-view" : "new-view"}`}>
-      <AppHeader mode={reviewMode} onMode={setReviewMode} view={view} hasReport={Boolean(analysis)} onNew={() => setView("new")} onReport={() => analysis && setView("report")} />
+      <AppHeader mode={reviewMode} onMode={changeReviewMode} view={view} hasReport={Boolean(analysis)} onNew={() => setView("new")} onReport={() => analysis && setView("report")} />
       <section className="workspace">
         {reviewMode === "piano" ? <PianoMode /> :
         <>
@@ -168,7 +192,7 @@ export default function Home() {
           <ReportWorkspace analysis={analysis} demoFile={demo.file} referenceFile={reference.file} onNew={() => setView("new")} />
         ) : null}
 
-        {analyzing ? <AnalysisProgress progress={progress.value} label={progress.label} /> : null}
+        {analyzing ? <AnalysisProgress progress={progress.value} label={progress.label} onCancel={() => { analysisRun.current += 1; analysisAbort.current?.abort(); analysisAbort.current = undefined; setAnalyzing(false); setAnalysisError("Analysis cancelled. No result was saved."); }} /> : null}
         </>}
       </section>
     </main>
@@ -421,7 +445,7 @@ function UploadCard({ slot, title, audio, error, active, previewing, inputRef, o
   );
 }
 
-function AnalysisProgress({ progress, label }: { progress: number; label: string }) {
+function AnalysisProgress({ progress, label, onCancel }: { progress: number; label: string; onCancel: () => void }) {
   const stages = [
     { at: 3, label: "Decoding Audio" },
     { at: 12, label: "Measuring Loudness" },
@@ -445,6 +469,7 @@ function AnalysisProgress({ progress, label }: { progress: number; label: string
           {stages.map((stage) => <div key={stage.label} className={progress >= stage.at ? "done" : ""}><span />{stage.label}</div>)}
         </div>
         <small>Audio is processed in your browser and is never uploaded to a server.</small>
+        <button type="button" className="analysis-cancel" onClick={onCancel}>Cancel analysis</button>
       </div>
     </div>
   );

@@ -11,6 +11,7 @@ type PendingRequest = { resolve: (result: EssentiaTempoEstimate) => void; reject
 let worker: Worker | undefined;
 let requestId = 0;
 const pending = new Map<number, PendingRequest>();
+let analysisQueue: Promise<void> = Promise.resolve();
 
 function rejectPending(message: string) {
   for (const request of pending.values()) {
@@ -45,8 +46,7 @@ function getWorker() {
   return worker;
 }
 
-/** Runs Essentia off the UI thread. The transferred samples must be mono 44.1 kHz and are consumed by this call. */
-export function analyzeEssentiaTempo(samples: Float32Array): Promise<EssentiaTempoEstimate> {
+function sendToEssentiaWorker(samples: Float32Array): Promise<EssentiaTempoEstimate> {
   const id = ++requestId;
   const transferable = samples.byteOffset === 0 && samples.byteLength === samples.buffer.byteLength ? samples : samples.slice();
   return new Promise((resolve, reject) => {
@@ -63,4 +63,18 @@ export function analyzeEssentiaTempo(samples: Float32Array): Promise<EssentiaTem
       reject(reason instanceof Error ? reason : new Error("Không thể gửi audio tới Essentia."));
     }
   });
+}
+
+/**
+ * Runs Essentia off the UI thread. Essentia's WebAssembly worker processes one
+ * track at a time; queueing here prevents later tracks from timing out while a
+ * previous analysis is still occupying the worker.
+ */
+export function analyzeEssentiaTempo(samples: Float32Array): Promise<EssentiaTempoEstimate> {
+  const task = analysisQueue.then(
+    () => sendToEssentiaWorker(samples),
+    () => sendToEssentiaWorker(samples),
+  );
+  analysisQueue = task.then(() => undefined, () => undefined);
+  return task;
 }
